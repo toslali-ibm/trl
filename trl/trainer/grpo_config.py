@@ -72,6 +72,8 @@ class GRPOConfig(TrainingArguments):
             Float that penalizes new tokens based on whether they appear in the prompt and the generated text so far.
             Values > `1.0` encourage the model to use new tokens, while values < `1.0` encourage the model to repeat
             tokens.
+        cache_implementation (`str` or `None`, *optional*, defaults to `None`):
+            Implementation of the cache method for faster generation when use_vllm is set to False.
 
         > Parameters that control generation acceleration powered by vLLM
 
@@ -100,6 +102,10 @@ class GRPOConfig(TrainingArguments):
             support this feature.
         vllm_guided_decoding_regex (`str` or `None`, *optional*, defaults to `None`):
             Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled.
+        vllm_external_launcher (`bool`, *optional*, defaults to `False`):
+            Whether to use an external launcher for distributed vLLM execution. If set to `True`, vLLM will be 
+            initialized in **all processes**, each assigned to its respective device. This allows multi-GPU 
+            or multi-node execution with vLLM's external launcher, enabling improved large-scale inference.
 
         > Parameters that control the training
 
@@ -217,6 +223,10 @@ class GRPOConfig(TrainingArguments):
             "to repeat tokens."
         },
     )
+    cache_implementation: Optional[str] = field(
+        default=None,
+        metadata={"help": "Implementation of the cache method for faster generation when use_vllm is set to False."},
+    )
 
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: Optional[bool] = field(
@@ -269,6 +279,14 @@ class GRPOConfig(TrainingArguments):
     vllm_guided_decoding_regex: Optional[str] = field(
         default=None,
         metadata={"help": "Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled."},
+    )
+    vllm_external_launcher: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "Whether to use an external launcher for distributed vLLM execution. If set to `True`, vLLM will be "
+                    "initialized in all processes, each assigned to its respective device. This enables optimized "
+                    "multi-GPU or multi-node inference."
+        },
     )
 
     # Parameters that control the training
