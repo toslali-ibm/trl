@@ -103,7 +103,7 @@ class VLLMColocationClient(BaseVLLMClient):
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        self.sampling_params = SamplingParams(
+        sampling_params = SamplingParams(
             n=1, # vLLM on each GPU generates only 1 in vllm_colocation mode
             repetition_penalty=repetition_penalty,
             temperature=temperature,
@@ -116,7 +116,7 @@ class VLLMColocationClient(BaseVLLMClient):
         )
         with profiling_context(self, "vLLM.generate"):
             all_outputs = self.llm.generate(
-                prompts, sampling_params=self.sampling_params, use_tqdm=False
+                prompts, sampling_params=sampling_params, use_tqdm=False
             )
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
         return completion_ids
