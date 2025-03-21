@@ -454,7 +454,7 @@ class GRPOTrainer(Trainer):
                 )
 
             ## if colocation enabled - create vLLMColocationClient, otherwise create vLLMClient
-            if self.args.vllm_external_launcher:
+            if self.args.vllm_colocation:
                 self.vllm_client = VLLMColocationClient(self.accelerator, self.args, model)
             elif self.accelerator.is_main_process:
                 self.vllm_client = VLLMClient(args.vllm_server_host, args.vllm_server_port, connection_timeout=120.0)
@@ -466,8 +466,8 @@ class GRPOTrainer(Trainer):
 
             # When using vLLM, the main process is responsible for loading the model weights. This can cause process
             # desynchronization and seems to lead to DeepSpeed hanging during initialization. To prevent this, we
-            # synchronize all processes after vLLM has been fully initialized.
-            if not self.args.vllm_external_launcher:
+            # synchronize all processes after vLLM has been fully initialized (if colocated, no need to wait).
+            if not self.args.vllm_colocation:
                 self.accelerator.wait_for_everyone()
         else:
             self.generation_config = GenerationConfig(
@@ -624,7 +624,8 @@ class GRPOTrainer(Trainer):
                         continue
                     name = name.replace("modules_to_save.default.", "")
 
-                    if self.accelerator.is_main_process or self.args.vllm_external: # ToDo: check if peft update as such is correct
+                    if self.accelerator.is_main_process or self.args.vllm_colocation:
+                        # ToDo: check if peft update as such is correct
                         self.vllm_client.update_named_param(name, param.data)
 
                 # Unmerge adapters while parameters are still gathered
@@ -634,11 +635,11 @@ class GRPOTrainer(Trainer):
             # For non-PEFT models, simply gather and update each parameter individually.
             for name, param in self.model.named_parameters():
                 with gather_if_zero3([param]):
-                    if self.accelerator.is_main_process or self.args.vllm_external:
+                    if self.accelerator.is_main_process or self.args.vllm_colocation:
                         self.vllm_client.update_named_param(name, param.data)
 
-        # Reset cache on main process
-        if self.accelerator.is_main_process or self.args.vllm_external:
+        # Reset cache on main process (if colocated, reset cache on all vllms)
+        if self.accelerator.is_main_process or self.args.vllm_colocation:
             self.vllm_client.reset_prefix_cache()
 
     @profiling_decorator
@@ -680,12 +681,12 @@ class GRPOTrainer(Trainer):
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process (if colocated, work on your own batch)
-            all_prompts_text = prompts_text if self.args.vllm_external_launcher else gather_object(prompts_text) 
-            if self.accelerator.is_main_process or self.args.vllm_external_launcher:
+            all_prompts_text = prompts_text if self.args.vllm_colocation else gather_object(prompts_text) 
+            if self.accelerator.is_main_process or self.args.vllm_colocation:
                 # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                 # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                 # prompt individually (if colocated, work on your own batch).
-                ordered_set_of_prompts = all_prompts_text if self.args.vllm_external_launcher else all_prompts_text[:: self.num_generations]
+                ordered_set_of_prompts = all_prompts_text if self.args.vllm_colocation else all_prompts_text[:: self.num_generations]
                 with profiling_context(self, "vLLM.generate"):
                     completion_ids = self.vllm_client.generate(
                         prompts=ordered_set_of_prompts,
@@ -702,7 +703,7 @@ class GRPOTrainer(Trainer):
                 completion_ids = [None] * len(all_prompts_text)
             # Broadcast the completions from the main process to all processes, ensuring each process receives its
             # corresponding slice (if colocated, no need for broadcasting).
-            if not self.args.vllm_external_launcher:
+            if not self.args.vllm_colocation:
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
                 process_slice = slice(
                     self.accelerator.process_index * len(prompts),

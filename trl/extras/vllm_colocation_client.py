@@ -91,7 +91,7 @@ class VLLMColocationClient:
         self.sampling_params = SamplingParams(
             max_tokens=self.max_completion_length,
             guided_decoding_regex=guided_decoding_regex,
-            n=1, # vLLM on each GPU generates only 1 in external_launcher mode
+            n=1, # vLLM on each GPU generates only 1 in vllm_colocation mode
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
