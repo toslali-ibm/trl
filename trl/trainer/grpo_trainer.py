@@ -43,8 +43,8 @@ from transformers.utils import is_peft_available
 
 from ..data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
 from ..extras.profiling import profiling_context, profiling_decorator
-from ..extras.vllm_client import VLLMClient
-from ..extras.vllm_colocation_client import VLLMColocationClient
+from ..extras.vllm_proxy import get_vllm_client
+
 from ..import_utils import is_deepspeed_available, is_rich_available, is_vllm_available
 from ..models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from .callbacks import SyncRefModelCallback
@@ -454,10 +454,7 @@ class GRPOTrainer(Trainer):
                 )
 
             ## if colocation enabled - create vLLMColocationClient, otherwise create vLLMClient
-            if self.args.vllm_colocation:
-                self.vllm_client = VLLMColocationClient(self.accelerator, self.args, model)
-            elif self.accelerator.is_main_process:
-                self.vllm_client = VLLMClient(args.vllm_server_host, args.vllm_server_port, connection_timeout=120.0)
+            self.vllm_client = get_vllm_client(self.args, self.accelerator, model)
 
             # vLLM specific sampling arguments
             self.guided_decoding_regex = args.vllm_guided_decoding_regex
