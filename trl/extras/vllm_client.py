@@ -21,6 +21,7 @@ import requests
 import torch
 from requests import ConnectionError
 from torch import nn
+from .vllm_proxy import BaseVLLMClient
 
 from ..import_utils import is_vllm_available
 
@@ -33,7 +34,7 @@ if is_vllm_available():
 logger = logging.getLogger(__name__)
 
 
-class VLLMClient:
+class VLLMClient(BaseVLLMClient):
     """
     A client class to interact with a vLLM server.
 
