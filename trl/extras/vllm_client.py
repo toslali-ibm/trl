@@ -354,10 +354,11 @@ class VLLMColocationClient:
         vllm_device (`torch.device` or `str`): Device on which the model is loaded (e.g., "cuda:0").
     """
 
-    def __init__(self, args: GRPOConfig, model, vllm_device):
+    def __init__(self, args: GRPOConfig, model, accelerator):
         self.args: GRPOConfig = args
         self.model = model
-        self.vllm_device = vllm_device
+        self.vllm_device = accelerator.device
+        self.tp_size = accelerator.num_processes
 
         self.llm = LLM(
             model=self.model.name_or_path,
@@ -366,6 +367,7 @@ class VLLMColocationClient:
             dtype=self.args.vllm_dtype,
             enable_prefix_caching=self.args.vllm_enable_prefix_caching,
             max_model_len=self.args.vllm_max_model_len,
+            tensor_parallel_size=self.tp_size if args.vllm_tp else 1,
             distributed_executor_backend="external_launcher",
         )
         
@@ -381,6 +383,20 @@ class VLLMColocationClient:
         """
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
+
+    def _gather(self, prompts):
+        return gather_object(prompts) 
+    
+    def _broadcast_and_slice(self, completion_ids: list, slice_size: int):
+        # Broadcast the completions from the main process to all processes, ensuring each process receives its
+        # corresponding slice
+
+        completion_ids = broadcast_object_list(completion_ids, from_process=0)
+        process_slice = slice(
+            self.process_index * slice_size,
+            (self.process_index + 1) * slice_size,
+        )
+        return completion_ids[process_slice]
 
     def generate(
         self,
@@ -427,8 +443,15 @@ class VLLMColocationClient:
         else:
             guided_decoding = None
 
+        num_gen = 1
+        if self.args.vllm_tp:
+            orig_size = len(prompts) # local size of prompts
+            prompts = self._gather(prompts) 
+            prompts = prompts[::n]
+            num_gen = self.args.num_generations
+
         sampling_params = SamplingParams(
-            n=1, # vLLM on each GPU generates only 1 in vllm_colocation mode
+            n=num_gen, # vLLM on each GPU generates only 1 in vllm_colocation mode, args.num_generations in vllm_tp mode
             repetition_penalty=repetition_penalty,
             temperature=temperature,
             top_p=top_p,
@@ -441,7 +464,12 @@ class VLLMColocationClient:
         all_outputs = self.llm.generate(
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
+
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
+
+        if self.args.vllm_tp:
+            completion_ids = self._broadcast_and_slice(completion_ids, orig_size)
+
         return completion_ids
 
     def reset_prefix_cache(self):
@@ -467,8 +495,8 @@ def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNo
         model (`transformers.PreTrainedModel`): The model to use, passed only for the colocated client.
         accelerator (`Accelerator`): Hugging Face `Accelerator` object that helps with multi-GPU training.
     """
-    if args.vllm_colocation:
-        return VLLMColocationClient(args, model, accelerator.device)
+    if args.vllm_colocation or args.vllm_tp:
+        return VLLMColocationClient(args, model, accelerator)
     elif accelerator.is_main_process:
         return VLLMClient(
             args.vllm_server_host, args.vllm_server_port, connection_timeout=args.vllm_server_timeout,

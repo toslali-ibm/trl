@@ -94,6 +94,10 @@ class GRPOConfig(TrainingArguments):
             Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be 
             initialized in **all processes**, each assigned to its respective device. This allows multi-GPU 
             or multi-node execution with vLLM's external launcher, enabling improved large-scale inference.
+        vllm_tp (`bool`, *optional*, defaults to `False`):
+            Flag to enable tensor parallelism with vLLM using the external_launcher backend. 
+            When set to True, vLLM will be initialized on all processes, with each assigned to its own device. 
+            This enables distributed execution across multiple GPUs or nodes, allowing large-scale inference by splitting the model across devices.
 
         > Parameters that control the training
 
@@ -260,6 +264,16 @@ class GRPOConfig(TrainingArguments):
             "help": "Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be "
                     "initialized in all processes, each assigned to its respective device. This enables optimized "
                     "multi-GPU inference."
+        },
+    )
+    vllm_tp: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable tensor parallel execution with vLLM using the external launcher backend. "
+                "When set to `True`, vLLM is initialized on all processes, each bound to its own device. "
+                "This allows efficient distributed inference across multiple GPUs."
+            )
         },
     )
 
