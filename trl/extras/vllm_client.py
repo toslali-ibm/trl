@@ -383,7 +383,7 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
-        self.wake_up()
+        self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
 
@@ -442,8 +442,6 @@ class VLLMColocationClient:
             orig_size = len(prompts) # size of local prompts (for splitting later)
             prompts = self._gather(prompts) 
 
-            print("-----\n orig size", orig_size , " prompt size", len(prompts))
-
         sampling_params = SamplingParams(
             n=num_gen, # vLLM on each GPU generates only 1 in vllm_colocation mode, args.num_generations (or 1?) in vllm_tp mode
             repetition_penalty=repetition_penalty,
@@ -460,7 +458,6 @@ class VLLMColocationClient:
         )
 
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
-        print("-----\n completion id size", len(completion_ids))
 
         if self.args.vllm_tp:
             # just do split - no broadcast!
@@ -469,7 +466,6 @@ class VLLMColocationClient:
                 (self.process_index  + 1) * orig_size
             )
             completion_ids = completion_ids[tp_slice]
-            print("-----\n Sliced completion id size", len(completion_ids), " and slice: ", tp_slice)
 
         self.llm.sleep(level=2)
 
