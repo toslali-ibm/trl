@@ -369,7 +369,10 @@ class VLLMColocationClient:
             max_model_len=self.args.vllm_max_model_len,
             tensor_parallel_size=self.tp_size if args.vllm_tp else 1,
             distributed_executor_backend="external_launcher",
+            enable_sleep_mode=True
         )
+
+        self.llm.sleep(level=2)
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -381,8 +384,10 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
+        self.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
+        self.llm.sleep(level=2)
 
     def _gather(self, prompts):
         return gather_object(prompts) 
@@ -437,6 +442,8 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
+        
+        self.llm.wake_up()
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -465,6 +472,8 @@ class VLLMColocationClient:
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
 
+        self.llm.sleep(level=2)
+
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
         if self.args.vllm_tp:
@@ -476,7 +485,9 @@ class VLLMColocationClient:
         """
         Resets the prefix cache for the model.
         """
+        self.llm.wake_up()
         self.llm.reset_prefix_cache()
+        self.llm.sleep(level=2)
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
