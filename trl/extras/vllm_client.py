@@ -359,6 +359,7 @@ class VLLMColocationClient:
         self.model = model
         self.vllm_device = accelerator.device
         self.tp_size = accelerator.num_processes
+        self.process_index = accelerator.process_index
 
         self.llm = LLM(
             model=self.model.name_or_path,
