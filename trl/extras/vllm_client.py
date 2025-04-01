@@ -473,12 +473,12 @@ class VLLMColocationClient:
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
 
-        self.llm.sleep(level=2)
-
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
         if self.args.vllm_tp:
             completion_ids = self._broadcast_and_slice(completion_ids, orig_size)
+
+        self.llm.sleep(level=2)
 
         return completion_ids
 
@@ -486,9 +486,10 @@ class VLLMColocationClient:
         """
         Resets the prefix cache for the model.
         """
-        self.llm.wake_up()
-        self.llm.reset_prefix_cache()
-        self.llm.sleep(level=2)
+        pass 
+        # self.llm.wake_up()
+        # self.llm.reset_prefix_cache()
+        # self.llm.sleep(level=2)
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
