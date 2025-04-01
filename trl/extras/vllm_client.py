@@ -372,8 +372,6 @@ class VLLMColocationClient:
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=True
         )
-
-        self.llm.sleep(level=2)
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -388,21 +386,9 @@ class VLLMColocationClient:
         self.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        self.llm.sleep(level=2)
 
     def _gather(self, prompts):
         return gather_object(prompts) 
-    
-    def _broadcast_and_slice(self, completion_ids: list, slice_size: int):
-        # Broadcast the completions from the main process to all processes, ensuring each process receives its
-        # corresponding slice
-
-        completion_ids = broadcast_object_list(completion_ids, from_process=0)
-        process_slice = slice(
-            self.process_index * slice_size,
-            (self.process_index + 1) * slice_size,
-        )
-        return completion_ids[process_slice]
 
     def generate(
         self,
@@ -443,7 +429,7 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        
+        torch.cuda.empty_cache()
         self.llm.wake_up()
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
@@ -453,13 +439,11 @@ class VLLMColocationClient:
 
         num_gen = 1
         if self.args.vllm_tp:
-            orig_size = len(prompts) # local size of prompts
+            orig_size = len(prompts) # size of local prompts (for splitting later)
             prompts = self._gather(prompts) 
-            prompts = prompts[::n]
-            num_gen = self.args.num_generations
 
         sampling_params = SamplingParams(
-            n=num_gen, # vLLM on each GPU generates only 1 in vllm_colocation mode, args.num_generations in vllm_tp mode
+            n=num_gen, # vLLM on each GPU generates only 1 in vllm_colocation mode, args.num_generations (or 1?) in vllm_tp mode
             repetition_penalty=repetition_penalty,
             temperature=temperature,
             top_p=top_p,
@@ -476,7 +460,12 @@ class VLLMColocationClient:
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
         if self.args.vllm_tp:
-            completion_ids = self._broadcast_and_slice(completion_ids, orig_size)
+            # just do split - no broadcast!
+            tp_slice = slice(
+                self.process_index  * orig_size,
+                (self.process_index) * orig_size
+            )
+            completion_ids = completion_ids[tp_slice]
 
         self.llm.sleep(level=2)
 
