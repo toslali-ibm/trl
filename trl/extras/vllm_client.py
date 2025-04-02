@@ -386,10 +386,10 @@ class VLLMColocationClient:
                 Tensor containing the updated weights.
         """
         print(self.process_index, "------------- Updating model - waking up")
-        mem = torch.cuda.memory_allocated()
+        mem = torch.cuda.memory_reserved()
         print(self.process_index, "------------- Mememory before empty_cache in updating model", mem)
         torch.cuda.empty_cache()
-        mem = torch.cuda.memory_allocated()
+        mem = torch.cuda.memory_reserved()
         print(self.process_index, "------------- memory after empty_cache, and waking up in updating model", mem)
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
@@ -439,11 +439,10 @@ class VLLMColocationClient:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
         print(self.process_index, "------------- Generation")
-        mem = torch.cuda.memory_allocated()
+        mem = torch.cuda.memory_reserved()
         print("------------- Mememory before empty_cache", mem)
         torch.cuda.empty_cache()
-
-        mem = torch.cuda.memory_allocated()
+        mem = torch.cuda.memory_reserved()
         print(self.process_index, "------------- memory after empty_cache, and waking up", mem)
 
         self.llm.wake_up()
