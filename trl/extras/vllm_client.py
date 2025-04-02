@@ -361,6 +361,7 @@ class VLLMColocationClient:
         self.tp_size = accelerator.num_processes
         self.process_index = accelerator.process_index
 
+        print("\n\n\n\n\n------------- Initializing LLM")
         self.llm = LLM(
             model=self.model.name_or_path,
             device=self.vllm_device,
@@ -372,6 +373,7 @@ class VLLMColocationClient:
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=True
         )
+        print("\n\n\n\n\n------------- Initialized LLM")
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -383,9 +385,11 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
+        print("\n\n\n\n\n------------- Updating model - waking up")
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
+        print("\n\n\n\n\n------------- Updated the model")
 
     def _gather(self, prompts):
         return gather_object(prompts) 
@@ -429,8 +433,16 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
+        print("\n\n\n\n\n------------- Generation")
+        mem = torch.cuda.memory_allocated()
+        print("\n\n\n\n\n------------- Mememory before empty_cache", mem)
         torch.cuda.empty_cache()
+
+        mem = torch.cuda.memory_allocated()
+        print("\n\n\n\n\n------------- memory after empty_cache, and waking up", mem)
+
         self.llm.wake_up()
+        print("\n\n\n\n\n------------- Woke up, will do generation")
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -468,6 +480,7 @@ class VLLMColocationClient:
             completion_ids = completion_ids[tp_slice]
 
         self.llm.sleep(level=2)
+        print("\n\n\n\n\n------------- GEnerated, going back to sleep")
 
         return completion_ids
 
@@ -475,10 +488,12 @@ class VLLMColocationClient:
         """
         Resets the prefix cache for the model.
         """
-        pass 
-        # self.llm.wake_up()
-        # self.llm.reset_prefix_cache()
-        # self.llm.sleep(level=2)
+        # pass 
+        print("\n\n\n\n\n------------- Will reset prefix cache now - waking up")
+        self.llm.wake_up()
+        self.llm.reset_prefix_cache()
+        self.llm.sleep(level=2)
+        print("\n\n\n\n\n------------- Reset done, going back to sleep")
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
