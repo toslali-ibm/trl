@@ -373,7 +373,7 @@ class VLLMColocationClient:
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=True
         )
-        print("\n\n\n\n\n------------- Initialized LLM")
+        print("------------- Initialized LLM")
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -385,11 +385,16 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
-        print("\n\n\n\n\n------------- Updating model - waking up")
+        print(self.process_index, "------------- Updating model - waking up")
+        mem = torch.cuda.memory_allocated()
+        print(self.process_index, "------------- Mememory before empty_cache in updating model", mem)
+        torch.cuda.empty_cache()
+        mem = torch.cuda.memory_allocated()
+        print(self.process_index, "------------- memory after empty_cache, and waking up in updating model", mem)
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        print("\n\n\n\n\n------------- Updated the model")
+        print(self.process_index, "------------- Updated the model")
 
     def _gather(self, prompts):
         return gather_object(prompts) 
@@ -433,16 +438,16 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        print("\n\n\n\n\n------------- Generation")
+        print(self.process_index, "------------- Generation")
         mem = torch.cuda.memory_allocated()
-        print("\n\n\n\n\n------------- Mememory before empty_cache", mem)
+        print("------------- Mememory before empty_cache", mem)
         torch.cuda.empty_cache()
 
         mem = torch.cuda.memory_allocated()
-        print("\n\n\n\n\n------------- memory after empty_cache, and waking up", mem)
+        print(self.process_index, "------------- memory after empty_cache, and waking up", mem)
 
         self.llm.wake_up()
-        print("\n\n\n\n\n------------- Woke up, will do generation")
+        print(self.process_index, "------------- Woke up, will do generation")
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -480,7 +485,7 @@ class VLLMColocationClient:
             completion_ids = completion_ids[tp_slice]
 
         self.llm.sleep(level=2)
-        print("\n\n\n\n\n------------- GEnerated, going back to sleep")
+        print(self.process_index, "------------- GEnerated, going back to sleep")
 
         return completion_ids
 
@@ -489,11 +494,11 @@ class VLLMColocationClient:
         Resets the prefix cache for the model.
         """
         # pass 
-        print("\n\n\n\n\n------------- Will reset prefix cache now - waking up")
+        print(self.process_index, "------------- Will reset prefix cache now - waking up")
         self.llm.wake_up()
         self.llm.reset_prefix_cache()
         self.llm.sleep(level=2)
-        print("\n\n\n\n\n------------- Reset done, going back to sleep")
+        print(self.process_index, "------------- Reset done, going back to sleep")
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
