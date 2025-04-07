@@ -362,7 +362,7 @@ class VLLMColocationClient:
         self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
         set_seed(42)
-        print(f"\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
+        # print(f"\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
         if self.args.vllm_colocation_tp:
             # Ensure TP value is valid (at least 1)
@@ -469,7 +469,7 @@ class VLLMColocationClient:
             torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
             prompts = [p for sublist in gathered_prompts for p in sublist]
 
-        print("\n\n---Rank ", self.process_index, " colocation check prompts, orig_size: ", orig_size, " local group prompts size", len(prompts), " should be equal to ", orig_size*self.args.vllm_colocation_tp )
+        # print("\n\n---Rank ", self.process_index, " colocation check prompts, orig_size: ", orig_size, " local group prompts size", len(prompts), " should be equal to ", orig_size*self.args.vllm_colocation_tp )
 
         sampling_params = SamplingParams(
             n=1, # vLLM on each device generates only 1 in vllm_colocation mode
