@@ -90,14 +90,11 @@ class GRPOConfig(TrainingArguments):
             timeout, a `ConnectionError` is raised.
         vllm_guided_decoding_regex (`str` or `None`, *optional*, defaults to `None`):
             Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled.
-        vllm_colocation (`bool`, *optional*, defaults to `False`):
-            Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be 
-            initialized in **all processes**, each assigned to its respective device. This allows multi-GPU 
-            or multi-node execution with vLLM's external launcher, enabling improved large-scale inference.
-        vllm_tp (`bool`, *optional*, defaults to `False`):
-            Flag to enable tensor parallelism with vLLM using the external_launcher backend. 
-            When set to True, vLLM will be initialized on all processes, with each assigned to its own device. 
-            This enables distributed execution across multiple GPUs or nodes, allowing large-scale inference by splitting the model across devices.
+        vllm_colocation_tp (`int` or `None`, *optional*, defaults to `None`):
+            Controls colocated vLLM execution and tensor parallelism via the `external_launcher` backend.
+            - Set to `None` to disable colocated vLLM entirely.
+            - Set to `1` to enable colocated vLLM on a single GPU with no tensor parallelism.
+            - Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple GPUs or nodes.
 
         > Parameters that control the training
 
@@ -258,21 +255,14 @@ class GRPOConfig(TrainingArguments):
         default=None,
         metadata={"help": "Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled."},
     )
-    vllm_colocation: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": "Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be "
-                    "initialized in all processes, each assigned to its respective device. This enables optimized "
-                    "multi-GPU inference."
-        },
-    )
-    vllm_tp: Optional[bool] = field(
-        default=False,
+    vllm_colocation_tp: Optional[int] = field(
+        default=None,
         metadata={
             "help": (
-                "Enable tensor parallel execution with vLLM using the external launcher backend. "
-                "When set to `True`, vLLM is initialized on all processes, each bound to its own device. "
-                "This allows efficient distributed inference across multiple GPUs."
+                "Controls colocated vLLM execution and tensor parallelism using the `external_launcher` backend. "
+                "Set to `None` to disable colocated vLLM. "
+                "Set to `1` to enable colocated vLLM on a single device (no tensor parallelism). "
+                "Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple devices."
             )
         },
     )

@@ -14,6 +14,7 @@
 
 import atexit
 import logging
+import os
 import time
 from typing import Optional
 
@@ -355,11 +356,36 @@ class VLLMColocationClient:
     """
 
     def __init__(self, args: GRPOConfig, model, accelerator):
-        self.args: GRPOConfig = args
+        self.args = args
         self.model = model
         self.vllm_device = accelerator.device
-        self.tp_size = accelerator.num_processes
+        self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
+        set_seed(42)
+        print(f"\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
+
+        if self.args.vllm_colocation_tp:
+            # Ensure TP value is valid (at least 1)
+            assert self.args.vllm_colocation_tp >= 1, "vllm_colocation_tp must be greater than 0"
+
+            # Get local world size from environment (https://pytorch.org/docs/stable/elastic/run.html#environment-variables)
+            self.local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+
+            # Make sure TP group size evenly divides the local world size
+            # This ensures each group has the same number of ranks
+            assert self.local_world_size % self.args.vllm_colocation_tp == 0, (
+                f"TP size of vllm_colocation_tp ({self.args.vllm_colocation_tp}) must divide LOCAL_WORLD_SIZE "
+                f"({self.local_world_size}) evenly."
+            )
+
+        # Create subgroups of ranks for TP, each group with `vllm_colocation_tp` ranks.
+        # For example, if world_size=8 and vllm_colocation_tp=2 → groups: [0,1], [2,3], [4,5], [6,7]
+        self.tp_group, _  = torch.distributed.new_subgroups_by_enumeration(
+            [
+                list(range(i*self.args.vllm_colocation_tp, (i+1) * self.args.vllm_colocation_tp)) 
+                for i in range(self.world_size // self.args.vllm_colocation_tp)
+            ]
+        )
 
         self.llm = LLM(
             model=self.model.name_or_path,
@@ -368,7 +394,7 @@ class VLLMColocationClient:
             dtype=self.args.vllm_dtype,
             enable_prefix_caching=self.args.vllm_enable_prefix_caching,
             max_model_len=self.args.vllm_max_model_len,
-            tensor_parallel_size=self.tp_size if args.vllm_tp else 1,
+            tensor_parallel_size=args.vllm_colocation_tp, 
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=True
         )
@@ -387,9 +413,6 @@ class VLLMColocationClient:
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-
-    def _gather(self, prompts):
-        return gather_object(prompts) 
 
     def generate(
         self,
@@ -438,12 +461,18 @@ class VLLMColocationClient:
         else:
             guided_decoding = None
 
-        if self.args.vllm_tp:
-            orig_size = len(prompts) # size of local prompts (for splitting later)
-            prompts = self._gather(prompts) 
+        if self.args.vllm_colocation_tp:
+            # Gather prompts from all ranks in the TP group and flatten.
+            # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
+            orig_size = len(prompts)
+            gathered_prompts = [None for _ in range(self.args.vllm_colocation_tp)]
+            torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
+            prompts = [p for sublist in gathered_prompts for p in sublist]
+
+        print("\n\n---Rank ", self.process_index, " colocation check prompts, orig_size: ", orig_size, " local group prompts size", len(prompts), " should be equal to ", orig_size*self.args.vllm_colocation_tp )
 
         sampling_params = SamplingParams(
-            n=1, # vLLM on each GPU generates only 1 in vllm_colocation mode
+            n=1, # vLLM on each device generates only 1 in vllm_colocation mode
             repetition_penalty=repetition_penalty,
             temperature=temperature,
             top_p=top_p,
@@ -459,12 +488,11 @@ class VLLMColocationClient:
 
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
-        if self.args.vllm_tp:
-            # just do split - no broadcast!
-            tp_slice = slice(
-                self.process_index * orig_size,
-                (self.process_index  + 1) * orig_size
-            )
+        if self.args.vllm_colocation_tp:
+            # Slice completions for this rank within its TP group.
+            # Each rank generates all outputs — we keep only our share.
+            local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
+            tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
         self.llm.sleep(level=2)
@@ -496,7 +524,7 @@ def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNo
         model (`transformers.PreTrainedModel`): The model to use, passed only for the colocated client.
         accelerator (`Accelerator`): Hugging Face `Accelerator` object that helps with multi-GPU training.
     """
-    if args.vllm_colocation or args.vllm_tp:
+    if args.vllm_colocation_tp:
         return VLLMColocationClient(args, model, accelerator)
     elif accelerator.is_main_process:
         return VLLMClient(
