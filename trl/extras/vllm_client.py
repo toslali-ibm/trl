@@ -368,14 +368,11 @@ class VLLMColocationClient:
             # Ensure TP value is valid (at least 1)
             assert self.args.vllm_colocation_tp >= 1, "vllm_colocation_tp must be greater than 0"
 
-            # Get local world size from environment (https://pytorch.org/docs/stable/elastic/run.html#environment-variables)
-            self.local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
-
-            # Make sure TP group size evenly divides the local world size
+            # Make sure TP group size evenly divides the world size
             # This ensures each group has the same number of ranks
-            assert self.local_world_size % self.args.vllm_colocation_tp == 0, (
-                f"TP size of vllm_colocation_tp ({self.args.vllm_colocation_tp}) must divide LOCAL_WORLD_SIZE "
-                f"({self.local_world_size}) evenly."
+            assert self.world_size % self.args.vllm_colocation_tp == 0, (
+                f"TP size of vllm_colocation_tp ({self.args.vllm_colocation_tp}) must divide world size "
+                f"({self.world_size}) evenly."
             )
 
         # Create subgroups of ranks for TP, each group with `vllm_colocation_tp` ranks.
