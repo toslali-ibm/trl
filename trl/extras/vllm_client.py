@@ -37,6 +37,10 @@ if is_vllm_available():
 
 from accelerate import Accelerator
 from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
+from contextlib import nullcontext
+from ..import_utils import is_deepspeed_available
+if is_deepspeed_available():
+    import deepspeed
 
 logger = logging.getLogger(__name__)
 
@@ -358,10 +362,11 @@ class VLLMColocationClient:
     def __init__(self, args: GRPOConfig, model, accelerator):
         self.args = args
         self.model = model
+        self.accelerator = accelerator
         self.vllm_device = accelerator.device
         self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
-        self._step = 0
+        self._model_needs_loading = True
         set_seed(42)
         print(f"\n\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
@@ -412,6 +417,19 @@ class VLLMColocationClient:
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
+        self._model_needs_loading = False
+
+    def load_model_during_grad_accumulation(self):
+        # Only load model during the grad accumulation steps - otherwise model was just loaded
+        if self._model_needs_loading:
+            print(f"\n\n---Rank {self.process_index} updating the model now") if self.process_index == 0 else None
+            deepspeed_plugin = self.accelerator.state.deepspeed_plugin
+            zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
+            gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
+            # ToDo: For now, focused on non-PEFT models, simply gather and update each parameter individually.
+            for name, param in self.model.named_parameters():
+                with gather_if_zero3([param]):
+                    self.update_named_param(name, param.data)
 
     def generate(
         self,
@@ -453,6 +471,9 @@ class VLLMColocationClient:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
         torch.cuda.empty_cache()
+        # Load model during grad accumulation steps (we lost model weights during previous sleep for memory)
+        self.load_model_during_grad_accumulation()
+
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -467,7 +488,7 @@ class VLLMColocationClient:
             torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
             prompts = [p for sublist in gathered_prompts for p in sublist]
 
-        print(f"\n\n---Rank {self.process_index} colocation, step {self._step}, grad accumulation {self.args.gradient_accumulation_steps}, check prompts, "
+        print(f"\n\n---Rank {self.process_index} generation... check prompts, "
           f"orig_size: {orig_size}, local group prompts size: {len(prompts)}, "
           f"should be equal to: {orig_size * self.args.vllm_colocation_tp}") if self.process_index == 0 else None
 
@@ -495,13 +516,8 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
-        # Only sleep after the last mini-step
-        if self.args.gradient_accumulation_steps == 1 or \
-        ((self._step + 1) % self.args.gradient_accumulation_steps == 0):
-            print(f"\n\n---Rank {self.process_index} sleeping now") if self.process_index == 0 else None
-            self.llm.sleep(level=2)
-
-        self._step += 1
+        self.llm.sleep(level=2)
+        self._model_needs_loading = True # we lose the weights after sleep - so ensure to reload it before next generation
         return completion_ids
 
     def reset_prefix_cache(self):
