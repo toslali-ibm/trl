@@ -472,7 +472,8 @@ class VLLMColocationClient:
         """
         torch.cuda.empty_cache()
         # Load model during grad accumulation steps (we lost model weights during previous sleep for memory)
-        self.load_model_during_grad_accumulation()
+        # self.load_model_during_grad_accumulation()
+        self.llm.wake_up()
 
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
@@ -516,7 +517,7 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
-        self.llm.sleep(level=2)
+        self.llm.sleep(level=1)
         self._model_needs_loading = True # we lose the weights after sleep - so ensure to reload it before next generation
         return completion_ids
 
