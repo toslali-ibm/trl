@@ -361,6 +361,7 @@ class VLLMColocationClient:
         self.vllm_device = accelerator.device
         self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
+        self._step = 0
         set_seed(42)
         print(f"\n\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
@@ -452,7 +453,6 @@ class VLLMColocationClient:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
         torch.cuda.empty_cache()
-        self.llm.wake_up()
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -467,9 +467,9 @@ class VLLMColocationClient:
             torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
             prompts = [p for sublist in gathered_prompts for p in sublist]
 
-        print(f"\n\n---Rank {self.process_index} colocation check prompts, "
+        print(f"\n\n---Rank {self.process_index} colocation, step {self._step}, grad accumulation {self.args.gradient_accumulation_steps}, check prompts, "
           f"orig_size: {orig_size}, local group prompts size: {len(prompts)}, "
-          f"should be equal to: {orig_size * self.args.vllm_colocation_tp}")
+          f"should be equal to: {orig_size * self.args.vllm_colocation_tp}") if self.process_index == 0 else None
 
         sampling_params = SamplingParams(
             n=1, # vLLM on each device generates only 1 in vllm_colocation mode
@@ -495,7 +495,13 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
-        self.llm.sleep(level=2)
+        # Only sleep after the last mini-step
+        if self.args.gradient_accumulation_steps == 1 or \
+        ((self._step + 1) % self.args.gradient_accumulation_steps == 0):
+            print(f"\n\n---Rank {self.process_index} sleeping now") if self.process_index == 0 else None
+            self.llm.sleep(level=2)
+
+        self._step += 1
         return completion_ids
 
     def reset_prefix_cache(self):
@@ -503,7 +509,6 @@ class VLLMColocationClient:
         Resets the prefix cache for the model.
         """
         # ToDo: perhaps we need to just pass 
-        # no need to wake up already awake)
         self.llm.reset_prefix_cache()
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
