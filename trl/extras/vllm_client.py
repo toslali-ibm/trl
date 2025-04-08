@@ -366,7 +366,7 @@ class VLLMColocationClient:
         self.vllm_device = accelerator.device
         self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
-        self._model_needs_loading = True
+        self._accumulation_step = 0
         set_seed(42)
         print(f"\n\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
@@ -417,19 +417,9 @@ class VLLMColocationClient:
         self.llm.wake_up()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        self._model_needs_loading = False
-
-    def load_model_during_grad_accumulation(self):
-        # Only load model during the grad accumulation steps - otherwise model was just loaded
-        if self._model_needs_loading:
-            print(f"\n\n---Rank {self.process_index} updating the model now") if self.process_index == 0 else None
-            deepspeed_plugin = self.accelerator.state.deepspeed_plugin
-            zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
-            gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
-            # ToDo: For now, focused on non-PEFT models, simply gather and update each parameter individually.
-            for name, param in self.model.named_parameters():
-                with gather_if_zero3([param]):
-                    self.update_named_param(name, param.data)
+        self._accumulation_step = 0
+        if self.process_index == 0:
+            print(f"[RANK 0] update_named_param done: {name}, accumulation_step reset to 0.")
 
     def generate(
         self,
@@ -471,8 +461,6 @@ class VLLMColocationClient:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
         torch.cuda.empty_cache()
-        # Load model during grad accumulation steps (we lost model weights during previous sleep for memory)
-        # self.load_model_during_grad_accumulation()
         self.llm.wake_up()
 
         # Guided decoding, if enabled
@@ -517,8 +505,16 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
-        self.llm.sleep(level=1)
-        self._model_needs_loading = True # we lose the weights after sleep - so ensure to reload it before next generation
+        # during grad accumulation, sleep 1, otherwise sleep 2 as we can safely forget weights - new model will be loaded
+        is_grad_accum = ((self._accumulation_step + 1) % self.args.gradient_accumulation_steps) != 0
+        if is_grad_accum:
+            self.llm.sleep(level=1)
+        else: 
+            self.llm.sleep(level=2)
+        self._accumulation_step += 1
+
+        if self.process_index == 0:
+            print(f"[RANK 0] generate done. Updated accumulation_step to {self._accumulation_step} and is_grad_accum was {is_grad_accum}")
         return completion_ids
 
     def reset_prefix_cache(self):
@@ -527,6 +523,8 @@ class VLLMColocationClient:
         """
         # ToDo: perhaps we need to just pass 
         self.llm.reset_prefix_cache()
+        if self.process_index == 0:
+            print(f"[RANK 0] reset_prefix_cache done.")
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
