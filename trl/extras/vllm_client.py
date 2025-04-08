@@ -393,6 +393,7 @@ class VLLMColocationClient:
             max_model_len=self.args.vllm_max_model_len,
             tensor_parallel_size=args.vllm_colocation_tp, 
             distributed_executor_backend="external_launcher",
+            enable_sleep_mode=True,
             max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation_tp
         )
         
