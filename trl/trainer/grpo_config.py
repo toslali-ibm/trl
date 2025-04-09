@@ -93,8 +93,8 @@ class GRPOConfig(TrainingArguments):
         vllm_colocation_tp (`int` or `None`, *optional*, defaults to `None`):
             Controls colocated vLLM execution and tensor parallelism via the `external_launcher` backend.
             - Set to `None` to disable colocated vLLM entirely.
-            - Set to `1` to enable colocated vLLM on a single GPU with no tensor parallelism.
-            - Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple GPUs or nodes.
+            - Set to `1` to enable colocated vLLM on each GPU with no tensor parallelism.
+            - Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple GPUs.
 
         > Parameters that control the training
 
@@ -261,7 +261,7 @@ class GRPOConfig(TrainingArguments):
             "help": (
                 "Controls colocated vLLM execution and tensor parallelism using the `external_launcher` backend. "
                 "Set to `None` to disable colocated vLLM. "
-                "Set to `1` to enable colocated vLLM on a single device (no tensor parallelism). "
+                "Set to `1` to enable colocated vLLM on each device (no tensor parallelism). "
                 "Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple devices."
             )
         },
