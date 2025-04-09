@@ -36,11 +36,7 @@ if is_vllm_available():
     from vllm.sampling_params import GuidedDecodingParams
 
 from accelerate import Accelerator
-from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
-from contextlib import nullcontext
-from ..import_utils import is_deepspeed_available
-if is_deepspeed_available():
-    import deepspeed
+from accelerate.utils import broadcast_object_list, gather_object, set_seed
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +362,7 @@ class VLLMColocationClient:
         self.vllm_device = accelerator.device
         self.world_size = accelerator.num_processes
         self.process_index = accelerator.process_index
-        self._accumulation_step = 0
+        self._is_sleeping = False
         set_seed(42)
         print(f"\n\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
@@ -402,6 +398,16 @@ class VLLMColocationClient:
             enable_sleep_mode=True,
             max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation_tp
         )
+    
+    def wake_up_vllm(self):
+        torch.cuda.empty_cache()
+        if self._is_sleeping:
+            self.llm.wake_up()
+            self._is_sleeping = False
+
+    def sleep_vllm(self):
+        self.llm.sleep(level=1)
+        self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -413,13 +419,12 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
-        torch.cuda.empty_cache()
-        self.llm.wake_up()
+        
+        self.wake_up_vllm()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        self._accumulation_step = 0
         if self.process_index == 0:
-            print(f"[RANK 0] update_named_param done: {name}, accumulation_step reset to 0.")
+            print(f"---[RANK 0] update_named_param done: {name}.")
 
     def generate(
         self,
@@ -460,8 +465,7 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        torch.cuda.empty_cache()
-        self.llm.wake_up()
+        self.wake_up_vllm()
 
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
@@ -514,16 +518,9 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
-        # during grad accumulation, sleep 1, otherwise sleep 2 as we can safely forget weights - new model will be loaded
-        is_grad_accum = ((self._accumulation_step + 1) % self.args.gradient_accumulation_steps) != 0
-        if is_grad_accum:
-            self.llm.sleep(level=1)
-        else: 
-            self.llm.sleep(level=2)
-        self._accumulation_step += 1
-
+        self.sleep_vllm()
         if self.process_index == 0:
-            print(f"[RANK 0] generate done. Updated accumulation_step to {self._accumulation_step} and sleep level was 1 during grad accumulation {is_grad_accum}")
+            print(f"[RANK 0] generate done.")
         return completion_ids
 
     def reset_prefix_cache(self):
