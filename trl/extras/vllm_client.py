@@ -419,12 +419,9 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
-        
         self.wake_up_vllm()
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        if self.process_index == 0:
-            print(f"---[RANK 0] update_named_param done: {name}.")
 
     def generate(
         self,
@@ -481,8 +478,8 @@ class VLLMColocationClient:
             torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
             prompts = [p for sublist in gathered_prompts for p in sublist]
 
-        print(f"\n\n---Rank {self.process_index} generation... check prompts, "
-          f"orig_size: {orig_size}, local group prompts size: {len(prompts)}, "
+        print(f"\n\n------Rank {self.process_index} generation... check prompts, "
+          f"orig_size: {orig_size} *  tp_size: {self.args.vllm_colocation_tp} = local group prompts size: {len(prompts)}, "
           f"should be equal to: {orig_size * self.args.vllm_colocation_tp}") if self.process_index == 0 else None
 
         sampling_params = SamplingParams(
@@ -520,7 +517,7 @@ class VLLMColocationClient:
 
         self.sleep_vllm()
         if self.process_index == 0:
-            print(f"[RANK 0] generate done.")
+            print(f"------[RANK 0] generate done.")
         return completion_ids
 
     def reset_prefix_cache(self):
@@ -529,7 +526,7 @@ class VLLMColocationClient:
         """
         self.llm.reset_prefix_cache()
         if self.process_index == 0:
-            print(f"[RANK 0] reset_prefix_cache done.")
+            print(f"----[RANK 0] reset_prefix_cache done.")
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
