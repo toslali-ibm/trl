@@ -496,6 +496,15 @@ class VLLMColocationClient:
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
 
+        if self.process_index == 0:
+            print("\n\n==== Rank 0 Prompt/Generation Output ====\n")
+            for i, (prompt, outputs) in enumerate(zip(prompts, all_outputs)):
+                print(f"--- Prompt {i+1} ---")
+                print(prompt)
+                print(f"--- Generation {i+1} ---")
+                print(outputs.outputs[0].text.strip())
+                print("=" * 40)
+
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
         if self.args.vllm_colocation_tp:
@@ -514,14 +523,13 @@ class VLLMColocationClient:
         self._accumulation_step += 1
 
         if self.process_index == 0:
-            print(f"[RANK 0] generate done. Updated accumulation_step to {self._accumulation_step} and is_grad_accum was {is_grad_accum}")
+            print(f"[RANK 0] generate done. Updated accumulation_step to {self._accumulation_step} and sleep level was 1 during grad accumulation {is_grad_accum}")
         return completion_ids
 
     def reset_prefix_cache(self):
         """
         Resets the prefix cache for the model.
         """
-        # ToDo: perhaps we need to just pass 
         self.llm.reset_prefix_cache()
         if self.process_index == 0:
             print(f"[RANK 0] reset_prefix_cache done.")
