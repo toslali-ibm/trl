@@ -364,7 +364,6 @@ class VLLMColocationClient:
         self.process_index = accelerator.process_index
         self._is_sleeping = False
         set_seed(42)
-        print(f"\n\n------ device {self.vllm_device}, tp size: {self.args.vllm_colocation_tp}, process index: {self.process_index}, process length {self.world_size}")
 
         if self.args.vllm_colocation_tp:
             # Ensure TP value is valid (at least 1)
@@ -478,10 +477,6 @@ class VLLMColocationClient:
             torch.distributed.all_gather_object(gathered_prompts, prompts, group=self.tp_group)
             prompts = [p for sublist in gathered_prompts for p in sublist]
 
-        print(f"\n\n------Rank {self.process_index} generation... check prompts, "
-          f"orig_size: {orig_size} *  tp_size: {self.args.vllm_colocation_tp} = local group prompts size: {len(prompts)}, "
-          f"should be equal to: {orig_size * self.args.vllm_colocation_tp}") if self.process_index == 0 else None
-
         sampling_params = SamplingParams(
             n=1, # vLLM on each device generates only 1 in vllm_colocation mode
             repetition_penalty=repetition_penalty,
@@ -497,15 +492,6 @@ class VLLMColocationClient:
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
 
-        if self.process_index == 0:
-            print("\n\n==== Rank 0 Prompt/Generation Output ====\n")
-            for i, (prompt, outputs) in enumerate(zip(prompts, all_outputs)):
-                print(f"--- Prompt {i+1} ---")
-                print(prompt)
-                print(f"--- Generation {i+1} ---")
-                print(outputs.outputs[0].text.strip())
-                print("=" * 40)
-
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
         if self.args.vllm_colocation_tp:
@@ -516,8 +502,6 @@ class VLLMColocationClient:
             completion_ids = completion_ids[tp_slice]
 
         self.sleep_vllm()
-        if self.process_index == 0:
-            print(f"------[RANK 0] generate done.")
         return completion_ids
 
     def reset_prefix_cache(self):
@@ -525,8 +509,6 @@ class VLLMColocationClient:
         Resets the prefix cache for the model.
         """
         self.llm.reset_prefix_cache()
-        if self.process_index == 0:
-            print(f"----[RANK 0] reset_prefix_cache done.")
 
 def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNoOpClient:
     """
