@@ -400,13 +400,14 @@ class VLLMColocationClient:
     
     def wake_up_vllm(self):
         torch.cuda.empty_cache()
-        if self._is_sleeping:
+        if self.args.vllm_sleep_enabled and self._is_sleeping:
             self.llm.wake_up()
             self._is_sleeping = False
 
     def sleep_vllm(self):
-        self.llm.sleep(level=1)
-        self._is_sleeping = True
+        if self.args.vllm_sleep_enabled:
+            self.llm.sleep(level=1)
+            self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """

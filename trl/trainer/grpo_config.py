@@ -95,6 +95,9 @@ class GRPOConfig(TrainingArguments):
             - Set to `None` to disable colocated vLLM entirely.
             - Set to `1` to enable colocated vLLM on each GPU with no tensor parallelism.
             - Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple GPUs.
+        vllm_sleep_enabled (`bool`, *optional*, defaults to `False`):  
+            Indicates whether to enable the sleep operation for vLLM during training.  
+            If set to `True`, vLLM will remain in sleep mode throughout the training stage.
 
         > Parameters that control the training
 
@@ -263,6 +266,16 @@ class GRPOConfig(TrainingArguments):
                 "Set to `None` to disable colocated vLLM. "
                 "Set to `1` to enable colocated vLLM on each device (no tensor parallelism). "
                 "Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple devices."
+            )
+        },
+    )
+    vllm_sleep_enabled: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enables sleep mode for colocated vLLM during training. "
+                "Set to `True` to keep vLLM in sleep state during training steps, helping reduce memory usage. "
+                "Set to `False` to disable this behavior."
             )
         },
     )
