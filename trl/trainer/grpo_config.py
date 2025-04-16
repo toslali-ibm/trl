@@ -90,7 +90,7 @@ class GRPOConfig(TrainingArguments):
             timeout, a `ConnectionError` is raised.
         vllm_guided_decoding_regex (`str` or `None`, *optional*, defaults to `None`):
             Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled.
-        vllm_colocation_tp (`int` or `None`, *optional*, defaults to `None`):
+        vllm_colocation (`int` or `None`, *optional*, defaults to `None`):
             Controls colocated vLLM execution and tensor parallelism via the `external_launcher` backend.
             - Set to `None` to disable colocated vLLM entirely.
             - Set to `1` to enable colocated vLLM on each GPU with no tensor parallelism.
@@ -258,7 +258,7 @@ class GRPOConfig(TrainingArguments):
         default=None,
         metadata={"help": "Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled."},
     )
-    vllm_colocation_tp: Optional[int] = field(
+    vllm_colocation: Optional[int] = field(
         default=None,
         metadata={
             "help": (
