@@ -179,6 +179,31 @@ def nanstd(tensor: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(variance)
 
 
+def create_torch_profiler(directory_name: str = 'profiler_traces'):
+
+    profiler = torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=torch.profiler.schedule(wait=1, warmup=2, active=3, repeat=1),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(directory_name),
+        profile_memory=True,
+        with_stack=False,
+        record_shapes=True,
+    )
+
+    class ProfCallback(TrainerCallback):
+        def __init__(self):
+            self.profiler = profiler
+
+        def on_step_end(self, args, state, control, **kwargs):
+            print('profiler step step step')
+            self.profiler.step()
+
+    return ProfCallback()
+
+
 class GRPOTrainer(Trainer):
     """
     Trainer for the Group Relative Policy Optimization (GRPO) method. This algorithm was initially proposed in the
@@ -521,6 +546,18 @@ class GRPOTrainer(Trainer):
         for i, reward_func in enumerate(self.reward_funcs):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
+
+        # torch profiler
+        if (
+            os.environ.get('ENABLE_PROFILER', 'false') == 'true'
+            and self.accelerator.is_main_process
+        ):
+            print ('profiler created!!!')
+            profiler_callback = create_torch_profiler(
+                os.path.join(self.args.output_dir, 'profiler_traces')
+            )
+            self.add_callback(profiler_callback)
+
 
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
