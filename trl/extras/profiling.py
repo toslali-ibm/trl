@@ -58,6 +58,7 @@ def profiling_context(trainer: Trainer, name: str) -> Generator[None, None, None
     duration = end_time - start_time
 
     if "wandb" in trainer.args.report_to and wandb.run is not None and trainer.accelerator.is_main_process:
+        print("----- logging here for sure!!  ", name, duration)
         wandb.log({f"profiling/Time taken: {trainer.__class__.__name__}.{name}": duration})
 
 
