@@ -18,6 +18,7 @@ import time
 from typing import Generator
 
 from transformers import Trainer, is_wandb_available
+from torch.profiler import record_function
 
 
 if is_wandb_available():
@@ -50,6 +51,8 @@ def profiling_context(trainer: Trainer, name: str) -> Generator[None, None, None
     ```
     """
     start_time = time.perf_counter()
+    with record_function(name):  # ✅ this enables profiler spans
+        yield
     yield
     end_time = time.perf_counter()
     duration = end_time - start_time
