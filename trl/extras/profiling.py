@@ -53,7 +53,7 @@ def profiling_context(trainer: Trainer, name: str) -> Generator[None, None, None
     start_time = time.perf_counter()
     with record_function(name):  # ✅ this enables profiler spans
         yield
-    yield
+
     end_time = time.perf_counter()
     duration = end_time - start_time
 
