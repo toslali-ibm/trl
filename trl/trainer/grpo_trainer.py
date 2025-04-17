@@ -179,29 +179,34 @@ def nanstd(tensor: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(variance)
 
 
-def create_torch_profiler(directory_name: str = 'profiler_traces'):
+class TorchProfilerCallback(TrainerCallback):
+    def __init__(self, output_dir='profiler_traces'):
+        self.enabled = (
+            os.environ.get('ENABLE_PROFILER', 'false').lower() == 'true'
+            and torch.distributed.get_rank() == 0
+        )
 
-    profiler = torch.profiler.profile(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.CUDA,
-        ],
-        schedule=torch.profiler.schedule(wait=1, warmup=2, active=3, repeat=1),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(directory_name),
-        profile_memory=True,
-        with_stack=False,
-        record_shapes=True,
-    )
+        if self.enabled:
+            self.profiler = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                schedule=torch.profiler.schedule(wait=1, warmup=2, active=3, repeat=1),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+                profile_memory=True,
+                with_stack=False,
+                record_shapes=True,
+            )
+            self.profiler.__enter__()
 
-    class ProfCallback(TrainerCallback):
-        def __init__(self):
-            self.profiler = profiler
-
-        def on_step_end(self, args, state, control, **kwargs):
-            print('profiler step step step')
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.enabled:
             self.profiler.step()
 
-    return ProfCallback()
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.enabled:
+            self.profiler.__exit__(None, None, None)
 
 
 class GRPOTrainer(Trainer):
@@ -547,14 +552,12 @@ class GRPOTrainer(Trainer):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
 
-        # torch profiler
         if (
             os.environ.get('ENABLE_PROFILER', 'false') == 'true'
             and self.accelerator.is_main_process
         ):
-            print ('profiler created!!!')
-            profiler_callback = create_torch_profiler(
-                os.path.join(self.args.output_dir, 'profiler_traces')
+            profiler_callback = TorchProfilerCallback(
+                output_dir=os.path.join(args.output_dir, 'profiler_traces')
             )
             self.add_callback(profiler_callback)
 
