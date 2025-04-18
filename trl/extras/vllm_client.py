@@ -1,4 +1,4 @@
-# Copyright 2025 The HuggingFace Team. All rights reserved.
+# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from ..import_utils import is_requests_available, is_vllm_available
+from ..import_utils import is_requests_available, is_vllm_ascend_available, is_vllm_available
 
 from ..trainer.grpo_config import GRPOConfig
 
@@ -33,6 +33,8 @@ if is_vllm_available():
     from vllm.distributed.utils import StatelessProcessGroup
     from vllm import SamplingParams, LLM
     from vllm.sampling_params import GuidedDecodingParams
+    if is_vllm_ascend_available():
+        from vllm_ascend.distributed.device_communicators.pyhccl import PyHcclCommunicator as PyNcclCommunicator
 
 from accelerate import Accelerator
 from accelerate.utils import broadcast_object_list, gather_object, set_seed
@@ -201,7 +203,7 @@ class VLLMClient(VLLMNoOpClient):
         min_p: float = 0.0,
         max_tokens: int = 16,
         guided_decoding_regex: Optional[str] = None,
-    ) -> list[list[str]]:
+    ) -> list[list[int]]:
         """
         Generates model completions for the provided prompts.
 
@@ -288,7 +290,7 @@ class VLLMClient(VLLMNoOpClient):
 
         # Set up the communication group for weight broadcasting
         pg = StatelessProcessGroup.create(host=self.host, port=self.group_port, rank=self.rank, world_size=world_size)
-        self.pynccl_comm = PyNcclCommunicator(pg, device="cuda:0")
+        self.pynccl_comm = PyNcclCommunicator(pg, device=0)
 
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -307,7 +309,7 @@ class VLLMClient(VLLMNoOpClient):
             raise Exception(f"Request failed: {response.status_code}, {response.text}")
 
         # Broadcast the weights to the other processes
-        self.pynccl_comm.broadcast(weights, src=self.rank, stream=torch.cuda.current_stream())
+        self.pynccl_comm.broadcast(weights, src=self.rank)
         self.pynccl_comm.group.barrier()
 
     def update_model_params(self, model: nn.Module):
@@ -336,9 +338,15 @@ class VLLMClient(VLLMNoOpClient):
         Closes the weight update group and cleans up the communication group.
         """
         url = f"http://{self.host}:{self.server_port}/close_communicator/"
-        response = self.session.post(url)
-        if response.status_code != 200:
-            raise Exception(f"Request failed: {response.status_code}, {response.text}")
+
+        try:
+            response = self.session.post(url)
+        except ConnectionError:
+            # The server might be already down, so we don't need to close the communicator
+            pass
+        else:
+            if response.status_code != 200:
+                raise Exception(f"Request failed: {response.status_code}, {response.text}")
 
 class VLLMColocationClient:
     """
