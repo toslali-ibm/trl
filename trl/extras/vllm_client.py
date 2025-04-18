@@ -359,16 +359,16 @@ class VLLMColocationClient:
     Args:
         args (GRPOConfig): Configuration object with vLLM-specific parameters.
         model (transformers.PreTrainedModel): The model used for generation and weight updates.
-        accelerator_device (str): Device where the model is loaded.
-        accelerator_num_processes (int): Total number of distributed processes (world size).
-        accelerator_process_index (int): Index of the current process in the distributed setup.
+        device (str): Device where the model is loaded.
+        num_processes (int): Total number of distributed processes (world size).
+        process_index (int): Index of the current process in the distributed setup.
     """
-    def __init__(self, args: GRPOConfig, model, accelerator_device, accelerator_num_processes, accelerator_process_index):
+    def __init__(self, args: GRPOConfig, model, device, num_processes, process_index):
         self.args = args
         self.model = model
-        self.vllm_device = accelerator_device
-        self.world_size = accelerator_num_processes
-        self.process_index = accelerator_process_index
+        self.vllm_device = device
+        self.world_size = num_processes
+        self.process_index = process_index
         self._is_sleeping = False
         set_seed(42)
 
@@ -401,7 +401,7 @@ class VLLMColocationClient:
             max_model_len=self.args.vllm_max_model_len,
             tensor_parallel_size=args.vllm_colocation, 
             distributed_executor_backend="external_launcher",
-            enable_sleep_mode=True,
+            enable_sleep_mode=self.args.vllm_sleep_enabled,
             max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation
         )
     
