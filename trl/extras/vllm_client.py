@@ -448,8 +448,12 @@ class VLLMColocationClient:
         The sleep only happens if `vllm_sleep_enabled` is set to True in the config.
         """
         if self.args.vllm_sleep_enabled:
-            print(f"\n\n---Rank {self.process_index} sleeping now with level 2") if self.process_index == 0 else None
-            self.llm.sleep(level=2) if self.args.vllm_sleep_level2 else self.llm.sleep(level=1)
+            if self.args.vllm_sleep_level2:
+                print(f"\n\n---Rank {self.process_index} sleeping now with level 2") if self.process_index == 0 else None
+                self.llm.sleep(level=2)  
+            else: 
+                print(f"\n\n---Rank {self.process_index} sleeping now with level 1") if self.process_index == 0 else None
+                self.llm.sleep(level=1)
             self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
