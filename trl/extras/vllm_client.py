@@ -425,7 +425,7 @@ class VLLMColocationClient:
         The sleep only happens if `vllm_sleep_enabled` is set to True in the config.
         """
         if self.args.vllm_sleep_enabled:
-            self.llm.sleep(level=1)
+            self.llm.sleep(level=2)
             self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
