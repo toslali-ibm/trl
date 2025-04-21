@@ -433,9 +433,10 @@ class VLLMColocationClient:
         It also calls `torch.cuda.empty_cache()` to free unused memory, helping avoid OOM errors.
         """
         torch.cuda.empty_cache()
-        if self.args.vllm_sleep_enabled and self._is_sleeping:
-            self.llm.wake_up()
-            print(f"\n\n---Rank {self.process_index} woke up now") if self.process_index == 0 else None
+        if self.args.vllm_sleep_enabled:
+            if self._is_sleeping:
+                self.llm.wake_up()
+                print(f"\n\n---Rank {self.process_index} woke up now") if self.process_index == 0 else None
             if self._grad_accumulation and self.args.vllm_sleep_level2:
                 self.load_model_during_grad_accumulation()
             self._is_sleeping = False
@@ -455,6 +456,7 @@ class VLLMColocationClient:
                 print(f"\n\n---Rank {self.process_index} sleeping now with level 1") if self.process_index == 0 else None
                 self.llm.sleep(level=1)
             self._is_sleeping = True
+            self._grad_accumulation = True #  done with current step, so next is grad accumulation unless it is set in update_named_param
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -471,7 +473,7 @@ class VLLMColocationClient:
         print(f"\n\n---Rank {self.process_index} updating model at big step") if self.process_index == 0 else None
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
-        self._grad_accumulation = True
+        # self._grad_accumulation = True
 
     def generate(
         self,
