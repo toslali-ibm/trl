@@ -416,14 +416,17 @@ class VLLMColocationClient:
     
     def load_model_during_grad_accumulation(self):
         # Only load model during the grad accumulation steps - otherwise model was just loaded
-        print(f"\n\n---Rank {self.process_index} updating the model now during grad accumulation") if self.process_index == 0 else None
-        deepspeed_plugin = self.accelerator.state.deepspeed_plugin
-        zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
-        gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
-        # ToDo: For now, focused on non-PEFT models, simply gather and update each parameter individually.
-        for name, param in self.model.named_parameters():
-            with gather_if_zero3([param]):
-                self.update_named_param(name, param.data)
+        print(f"\n---Rank {self.process_index} load_model_during_grad_accumulation checking") if self.process_index == 0 else None
+        if self.args.vllm_sleep_level2:
+            print(f"\n---Rank {self.process_index} updating the model now during grad accumulation") if self.process_index == 0 else None
+            deepspeed_plugin = self.accelerator.state.deepspeed_plugin
+            zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
+            gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
+            # ToDo: For now, focused on non-PEFT models, simply gather and update each parameter individually.
+            for name, param in self.model.named_parameters():
+                with gather_if_zero3([param]):
+                    llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
+                    llm_model.load_weights([(name,param.data)])
 
     def maybe_wake_up_vllm(self):
         """
@@ -434,10 +437,12 @@ class VLLMColocationClient:
         """
         torch.cuda.empty_cache()
         if self.args.vllm_sleep_enabled:
+            print(f"\n\n---Rank {self.process_index} vllm_sleep_enabled - check to wake up") if self.process_index == 0 else None
             if self._is_sleeping:
                 self.llm.wake_up()
                 print(f"\n\n---Rank {self.process_index} woke up now") if self.process_index == 0 else None
-            if self._grad_accumulation and self.args.vllm_sleep_level2:
+            if self._grad_accumulation:
+                print("\n\n grad accumulation - check and load the model")
                 self.load_model_during_grad_accumulation()
             self._is_sleeping = False
 
@@ -470,7 +475,7 @@ class VLLMColocationClient:
         """
         self._grad_accumulation = False # updating model weights - not grad accumulation
         self.maybe_wake_up_vllm()
-        print(f"\n\n---Rank {self.process_index} updating model at big step") if self.process_index == 0 else None
+        print(f"---Rank {self.process_index} updating model at big step") if self.process_index == 0 else None
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
         # self._grad_accumulation = True
