@@ -14,6 +14,7 @@
 
 import atexit
 import logging
+import os
 import time
 from typing import Optional
 
@@ -406,10 +407,11 @@ class VLLMColocationClient:
             dtype=self.args.vllm_dtype,
             enable_prefix_caching=self.args.vllm_enable_prefix_caching,
             max_model_len=self.args.vllm_max_model_len,
-            tensor_parallel_size=args.vllm_colocation, 
+            tensor_parallel_size=self.args.vllm_colocation, 
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=self.args.vllm_sleep_enabled,
-            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation
+            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation,
+            seed=int(os.getenv("RANK", "0")) // self.args.vllm_colocation, 
         )
     
     def load_model_during_grad_accumulation(self):
