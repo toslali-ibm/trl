@@ -20,7 +20,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from ..import_utils import is_requests_available, is_vllm_ascend_available, is_vllm_available
+from ..import_utils import is_requests_available, is_vllm_ascend_available, is_vllm_available, is_deepspeed_available
 
 from ..trainer.grpo_config import GRPOConfig
 
