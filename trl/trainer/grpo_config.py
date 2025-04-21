@@ -308,7 +308,6 @@ class GRPOConfig(TrainingArguments):
             )
         },
     )
-
     vllm_sleep_enabled: Optional[bool] = field(
         default=False,
         metadata={
@@ -316,14 +315,6 @@ class GRPOConfig(TrainingArguments):
                 "Enables sleep mode for colocated vLLM during training. "
                 "Set to `True` to keep vLLM in sleep state during training steps, helping reduce memory usage. "
                 "Set to `False` to disable this behavior."
-            )
-        },
-    )
-    vllm_sleep_level2: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": (
-                "Sleep level 2 enabled - otherwise sleep level 1"
             )
         },
     )

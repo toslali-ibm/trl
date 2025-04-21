@@ -14,14 +14,13 @@
 
 import atexit
 import logging
-import os
 import time
 from typing import Optional
 
 import torch
 from torch import nn
 
-from ..import_utils import is_requests_available, is_vllm_ascend_available, is_vllm_available, is_deepspeed_available
+from ..import_utils import is_requests_available, is_vllm_ascend_available, is_vllm_available
 
 from ..trainer.grpo_config import GRPOConfig
 
@@ -39,11 +38,6 @@ if is_vllm_available():
 
 from accelerate import Accelerator
 from accelerate.utils import broadcast_object_list, gather_object, set_seed
-
-if is_deepspeed_available():
-    import deepspeed
-
-from contextlib import nullcontext
 
 logger = logging.getLogger(__name__)
 
@@ -369,15 +363,13 @@ class VLLMColocationClient:
         num_processes (int): Total number of distributed processes (world size).
         process_index (int): Index of the current process in the distributed setup.
     """
-    def __init__(self, args: GRPOConfig, model, device, num_processes, process_index, accelerator):
+    def __init__(self, args: GRPOConfig, model, device, num_processes, process_index):
         self.args = args
         self.model = model
         self.vllm_device = device
         self.world_size = num_processes
         self.process_index = process_index
-        self.accelerator = accelerator
         self._is_sleeping = False
-        self._grad_accumulation = False
         set_seed(42)
 
         # Ensure TP value is valid (at least 1)
@@ -407,29 +399,12 @@ class VLLMColocationClient:
             dtype=self.args.vllm_dtype,
             enable_prefix_caching=self.args.vllm_enable_prefix_caching,
             max_model_len=self.args.vllm_max_model_len,
-            tensor_parallel_size=self.args.vllm_colocation, 
+            tensor_parallel_size=args.vllm_colocation, 
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=self.args.vllm_sleep_enabled,
-            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation,
-            seed=int(os.getenv("RANK", "0")) // self.args.vllm_colocation, 
+            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation
         )
-
-        print(f"---Rank {self.process_index} initialized llm for the first time") if self.process_index == 0 else None
     
-    def load_model_during_grad_accumulation(self):
-        # Only load model during the grad accumulation steps - otherwise model was just loaded
-        print(f"---Rank {self.process_index} load_model_during_grad_accumulation checking") if self.process_index == 0 else None
-        if self.args.vllm_sleep_level2:
-            print(f"---Rank {self.process_index} updating the model now during grad accumulation") if self.process_index == 0 else None
-            deepspeed_plugin = self.accelerator.state.deepspeed_plugin
-            zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
-            gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
-            # ToDo: For now, focused on non-PEFT models, simply gather and update each parameter individually.
-            for name, param in self.model.named_parameters():
-                with gather_if_zero3([param]):
-                    llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
-                    llm_model.load_weights([(name,param.data)])
-
     def maybe_wake_up_vllm(self):
         """
         Wakes up the vLLM engine if it is currently in sleep mode.
@@ -438,15 +413,8 @@ class VLLMColocationClient:
         It also calls `torch.cuda.empty_cache()` to free unused memory, helping avoid OOM errors.
         """
         torch.cuda.empty_cache()
-        print(f'----[wake_check] sleeping: {self._is_sleeping}, grad_accumulation: {self._grad_accumulation}, vllm_sleep_enabled: {self.args.vllm_sleep_enabled}, vllm_sleep_level2: {self.args.vllm_sleep_level2}') if self.process_index == 0 else None 
-        if self.args.vllm_sleep_enabled:
-            # print(f"\n\n---Rank {self.process_index} vllm_sleep_enabled - check to wake up") if self.process_index == 0 else None
-            if self._is_sleeping:
-                self.llm.wake_up()
-                print(f"\n\n---Rank {self.process_index} woke up now") if self.process_index == 0 else None
-            if self._grad_accumulation:
-                print("\n\n grad accumulation - check and load the model")
-                self.load_model_during_grad_accumulation()
+        if self.args.vllm_sleep_enabled and self._is_sleeping:
+            self.llm.wake_up()
             self._is_sleeping = False
 
     def maybe_sleep_vllm(self):
@@ -457,16 +425,8 @@ class VLLMColocationClient:
         The sleep only happens if `vllm_sleep_enabled` is set to True in the config.
         """
         if self.args.vllm_sleep_enabled:
-            print(f'-----[sleep_check] sleeping: {self._is_sleeping}, grad_accumulation: {self._grad_accumulation}, vllm_sleep_enabled: {self.args.vllm_sleep_enabled}, vllm_sleep_level2: {self.args.vllm_sleep_level2}') if self.process_index == 0 else None 
-            if self.args.vllm_sleep_level2:
-                print(f"\n\n---Rank {self.process_index} sleeping now with level 2") if self.process_index == 0 else None
-                self.llm.sleep(level=2)  
-            else: 
-                print(f"\n\n---Rank {self.process_index} sleeping now with level 1") if self.process_index == 0 else None
-                self.llm.sleep(level=1)
+            self.llm.sleep(level=1)
             self._is_sleeping = True
-            self._grad_accumulation = True #  done with current step, so next is grad accumulation unless it is set in update_named_param
-            print(f'----[sleep_check_end] sleeping: {self._is_sleeping}, grad_accumulation: {self._grad_accumulation}, vllm_sleep_enabled: {self.args.vllm_sleep_enabled}, vllm_sleep_level2: {self.args.vllm_sleep_level2}') if self.process_index == 0 else None 
         
     def update_named_param(self, name: str, weights: torch.Tensor):
         """
@@ -478,9 +438,7 @@ class VLLMColocationClient:
             weights (`torch.Tensor`):
                 Tensor containing the updated weights.
         """
-        self._grad_accumulation = False # updating model weights - not grad accumulation
         self.maybe_wake_up_vllm()
-        print(f"---Rank {self.process_index} updating model at big step") if self.process_index == 0 else None
         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights([(name,weights)])
 
@@ -523,8 +481,6 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
-        
-        print(f"---Rank {self.process_index} start generation") if self.process_index == 0 else None
         self.maybe_wake_up_vllm()
 
         # Guided decoding, if enabled
@@ -555,15 +511,6 @@ class VLLMColocationClient:
         all_outputs = self.llm.generate(
             prompts, sampling_params=sampling_params, use_tqdm=False
         )
-
-        if self.process_index == 0:
-            print("\n\n==== Rank 0 Prompt/Generation Output ====\n")
-            for i, (prompt, outputs) in enumerate(zip(prompts, all_outputs)):
-                print(f"--- Prompt {i+1} ---")
-                print(prompt)
-                print(f"--- Generation {i+1} ---")
-                print(outputs.outputs[0].text.strip())
-                print("=" * 40)
 
         completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
@@ -601,7 +548,7 @@ def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNo
         accelerator (`Accelerator`): Hugging Face `Accelerator` object that helps with multi-GPU training.
     """
     if args.vllm_colocation:
-        return VLLMColocationClient(args, model, accelerator.device, accelerator.num_processes, accelerator.process_index, accelerator)
+        return VLLMColocationClient(args, model, accelerator.device, accelerator.num_processes, accelerator.process_index)
     elif accelerator.is_main_process:
         return VLLMClient(
             args.vllm_server_host, args.vllm_server_port, connection_timeout=args.vllm_server_timeout,
