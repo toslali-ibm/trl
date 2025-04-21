@@ -436,7 +436,7 @@ class VLLMColocationClient:
         if self.args.vllm_sleep_enabled and self._is_sleeping:
             self.llm.wake_up()
             print(f"\n\n---Rank {self.process_index} woke up now") if self.process_index == 0 else None
-            if self._grad_accumulation:
+            if self._grad_accumulation and self.args.vllm_sleep_level2:
                 self.load_model_during_grad_accumulation()
             self._is_sleeping = False
 
@@ -449,7 +449,7 @@ class VLLMColocationClient:
         """
         if self.args.vllm_sleep_enabled:
             print(f"\n\n---Rank {self.process_index} sleeping now with level 2") if self.process_index == 0 else None
-            self.llm.sleep(level=2)
+            self.llm.sleep(level=2) if self.args.vllm_sleep_level2 else self.llm.sleep(level=1)
             self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
