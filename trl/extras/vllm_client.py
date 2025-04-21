@@ -368,12 +368,13 @@ class VLLMColocationClient:
         num_processes (int): Total number of distributed processes (world size).
         process_index (int): Index of the current process in the distributed setup.
     """
-    def __init__(self, args: GRPOConfig, model, device, num_processes, process_index):
+    def __init__(self, args: GRPOConfig, model, device, num_processes, process_index, accelerator):
         self.args = args
         self.model = model
         self.vllm_device = device
         self.world_size = num_processes
         self.process_index = process_index
+        self.accelerator = accelerator
         self._is_sleeping = False
         self._grad_accumulation = True
         set_seed(42)
@@ -581,7 +582,7 @@ def get_vllm_client(args: GRPOConfig, model, accelerator: Accelerator) -> VLLMNo
         accelerator (`Accelerator`): Hugging Face `Accelerator` object that helps with multi-GPU training.
     """
     if args.vllm_colocation:
-        return VLLMColocationClient(args, model, accelerator.device, accelerator.num_processes, accelerator.process_index)
+        return VLLMColocationClient(args, model, accelerator.device, accelerator.num_processes, accelerator.process_index, accelerator)
     elif accelerator.is_main_process:
         return VLLMClient(
             args.vllm_server_host, args.vllm_server_port, connection_timeout=args.vllm_server_timeout,
