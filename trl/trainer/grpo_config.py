@@ -94,10 +94,14 @@ class GRPOConfig(TrainingArguments):
             timeout, a `ConnectionError` is raised.
         vllm_guided_decoding_regex (`str` or `None`, *optional*, defaults to `None`):
             Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled.
-        vllm_colocation (`bool`, *optional*, defaults to `False`):
-            Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be 
-            initialized in **all processes**, each assigned to its respective device. This allows multi-GPU 
-            or multi-node execution with vLLM's external launcher, enabling improved large-scale inference.
+        vllm_colocation (`int` or `None`, *optional*, defaults to `None`):
+            Controls colocated vLLM execution and tensor parallelism via the `external_launcher` backend.
+            - Set to `None` to disable colocated vLLM entirely.
+            - Set to `1` to enable colocated vLLM on each GPU with no tensor parallelism.
+            - Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple GPUs.
+        vllm_sleep_enabled (`bool`, *optional*, defaults to `False`):  
+            Indicates whether to enable the sleep operation for vLLM during training.  
+            If set to `True`, vLLM will remain in sleep mode throughout the training stage.
 
         > Parameters that control the training
 
@@ -293,12 +297,33 @@ class GRPOConfig(TrainingArguments):
         default=None,
         metadata={"help": "Regex for vLLM guided decoding. If `None` (default), guided decoding is disabled."},
     )
-    vllm_colocation: Optional[bool] = field(
+    vllm_colocation: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Controls colocated vLLM execution and tensor parallelism using the `external_launcher` backend. "
+                "Set to `None` to disable colocated vLLM. "
+                "Set to `1` to enable colocated vLLM on each device (no tensor parallelism). "
+                "Set to a value >1 to enable colocated vLLM with tensor parallelism across multiple devices."
+            )
+        },
+    )
+    vllm_sleep_enabled: Optional[bool] = field(
         default=False,
         metadata={
-            "help": "Whether to use colocated vLLM execution via external launcher. If set to `True`, vLLM will be "
-                    "initialized in all processes, each assigned to its respective device. This enables optimized "
-                    "multi-GPU inference."
+            "help": (
+                "Enables sleep mode for colocated vLLM during training. "
+                "Set to `True` to keep vLLM in sleep state during training steps, helping reduce memory usage. "
+                "Set to `False` to disable this behavior."
+            )
+        },
+    )
+    vllm_sleep_level1: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": (
+                "Sleep level 1 enabled - otherwise sleep level 2 default"
+            )
         },
     )
 
