@@ -318,6 +318,14 @@ class GRPOConfig(TrainingArguments):
             )
         },
     )
+    vllm_sleep_level1: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": (
+                "Sleep level 1 enabled - otherwise sleep level 2 default"
+            )
+        },
+    )
 
     # Parameters that control the training
     learning_rate: float = field(

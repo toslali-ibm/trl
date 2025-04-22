@@ -14,6 +14,7 @@
 
 import atexit
 import logging
+import os
 import time
 from typing import Optional
 
@@ -402,7 +403,8 @@ class VLLMColocationClient:
             tensor_parallel_size=args.vllm_colocation, 
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=self.args.vllm_sleep_enabled,
-            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation
+            max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation,
+            seed=int(os.getenv("RANK", "0")) // self.args.vllm_colocation, # feed identical seed for tp groups
         )
     
     def maybe_wake_up_vllm(self):
@@ -425,7 +427,10 @@ class VLLMColocationClient:
         The sleep only happens if `vllm_sleep_enabled` is set to True in the config.
         """
         if self.args.vllm_sleep_enabled:
-            self.llm.sleep(level=2)
+            if self.args.vllm_sleep_level1:
+                self.llm.sleep(level=1)
+            else:
+                self.llm.sleep(level=2)
             self._is_sleeping = True
         
     def update_named_param(self, name: str, weights: torch.Tensor):
