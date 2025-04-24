@@ -397,6 +397,13 @@ class VLLMColocationClient:
             enable_sleep_mode=True,
             max_num_seqs=self.args.per_device_train_batch_size * self.args.vllm_colocation_tp
         )
+
+    def profiler_memory(self, where):
+        if self.process_index == 0:
+            print(f"============Where: ", where)
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1e6:.2f} MB")
+            print(f"Reserved : {torch.cuda.memory_reserved() / 1e6:.2f} MB")
+            print(f"Free bytes: {torch.cuda.mem_get_info()[0]/ 1e6:.2f} MB")
     
     def wake_up_vllm(self):
         torch.cuda.empty_cache()
@@ -461,8 +468,9 @@ class VLLMColocationClient:
             `list[list[int]]`:
                 List of lists of token IDs representing the model-generated completions for each prompt.
         """
+        self.profiler_memory("generate before wake up vllm")
         self.wake_up_vllm()
-
+        self.profiler_memory("generate after wake up vllm")
         # Guided decoding, if enabled
         if guided_decoding_regex is not None:
             guided_decoding = GuidedDecodingParams(backend="outlines", regex=guided_decoding_regex)
@@ -501,7 +509,9 @@ class VLLMColocationClient:
             tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
             completion_ids = completion_ids[tp_slice]
 
+        self.profiler_memory("generate before sleep vllm")
         self.sleep_vllm()
+        self.profiler_memory("generate after sleep vllm")
         return completion_ids
 
     def reset_prefix_cache(self):
