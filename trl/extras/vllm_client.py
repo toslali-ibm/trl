@@ -400,6 +400,7 @@ class VLLMColocationClient:
             dtype=self.args.vllm_dtype,
             enable_prefix_caching=self.args.vllm_enable_prefix_caching,
             max_model_len=self.args.vllm_max_model_len,
+            max_num_batched_tokens=self.args.vllm_max_model_len,
             tensor_parallel_size=args.vllm_colocation, 
             distributed_executor_backend="external_launcher",
             enable_sleep_mode=self.args.vllm_sleep_enabled,
