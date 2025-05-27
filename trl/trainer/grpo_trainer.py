@@ -653,7 +653,8 @@ class GRPOTrainer(Trainer):
                     # Feed identical seed for tp groups to ensure sampling results are the same across workers
                     seed=self.accelerator.process_index // self.vllm_tensor_parallel_size,
                     enable_sleep_mode=True,
-                    max_num_batched_tokens=self.max_prompt_length + self.max_completion_length
+                    # max_num_batched_tokens=self.max_prompt_length + self.max_completion_length
+                    max_num_batched_tokens = self.args.per_device_train_batch_size * self.args.gradient_accumulation_steps * (self.max_prompt_length + self.max_completion_length)
                 )
 
             # vLLM specific sampling arguments
