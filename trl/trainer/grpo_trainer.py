@@ -1083,8 +1083,7 @@ class GRPOTrainer(Trainer):
                         self.llm.wake_up()
                         self.vllm_sleeping = False
                     all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
-                    if not self.vllm_sleeping:
-                        self.llm.sleep(level=2)
+                    self.llm.sleep(level=2)
                     self.vllm_sleeping = True
                     torch.cuda.empty_cache()
 
