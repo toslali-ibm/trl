@@ -653,6 +653,8 @@ class GRPOTrainer(Trainer):
                     distributed_executor_backend="external_launcher",
                     # Feed identical seed for tp groups to ensure sampling results are the same across workers
                     seed=self.accelerator.process_index // self.vllm_tensor_parallel_size,
+                    enable_sleep_mode=True,
+                    max_num_batched_tokens=self.max_prompt_length + self.max_completion_length
                 )
 
             # vLLM specific sampling arguments
@@ -879,6 +881,8 @@ class GRPOTrainer(Trainer):
                     if self.vllm_mode == "server" and self.accelerator.is_main_process:
                         self.vllm_client.update_named_param(full_name, param.data)
                     elif self.vllm_mode == "colocate":
+                        torch.cuda.empty_cache()
+                        self.llm.wake_up()
                         llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                         llm_model.load_weights([(full_name, param.data)])
 
@@ -921,6 +925,8 @@ class GRPOTrainer(Trainer):
                         if self.vllm_mode == "server" and self.accelerator.is_main_process:
                             self.vllm_client.update_named_param(name, param.data)
                         elif self.vllm_mode == "colocate":
+                            torch.cuda.empty_cache()
+                            self.llm.wake_up()
                             llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                             llm_model.load_weights([(name, param.data)])
                 # Unmerge adapters while parameters are still gathered
@@ -936,6 +942,8 @@ class GRPOTrainer(Trainer):
                         if self.vllm_mode == "server" and self.accelerator.is_main_process:
                             self.vllm_client.update_named_param(name, param.data)
                         elif self.vllm_mode == "colocate":
+                            torch.cuda.empty_cache()
+                            self.llm.wake_up()
                             llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                             llm_model.load_weights([(name, param.data)])
 
@@ -1062,7 +1070,12 @@ class GRPOTrainer(Trainer):
                     all_prompts_text = prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
+                    torch.cuda.empty_cache()
+                    self.llm.wake_up()
                     all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
+                    self.llm.sleep(level=2)
+                    torch.cuda.empty_cache()
+
 
                 completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
 
