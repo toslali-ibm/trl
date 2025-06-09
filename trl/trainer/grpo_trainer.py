@@ -654,7 +654,7 @@ class GRPOTrainer(Trainer):
                     seed=self.accelerator.process_index // self.vllm_tensor_parallel_size,
                     enable_sleep_mode=True,
                     # max_num_batched_tokens=self.max_prompt_length + self.max_completion_length
-                    max_num_batched_tokens = self.args.per_device_train_batch_size * self.args.gradient_accumulation_steps * (self.max_prompt_length + self.max_completion_length) # 4096?? 
+                    max_num_batched_tokens = 4096 # self.args.per_device_train_batch_size * self.args.gradient_accumulation_steps * (self.max_prompt_length + self.max_completion_length) # 4096?? 
                 )
                 self.vllm_sleeping = False
 
