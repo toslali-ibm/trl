@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import random
 import textwrap
 import warnings
 from collections import defaultdict, deque
@@ -21,6 +22,7 @@ from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+from collections import deque
 
 import datasets
 import torch
@@ -393,6 +395,15 @@ class GRPOTrainer(Trainer):
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
     ):
+        
+        self.REUSE_BUFFER = deque() # FIFO for confirmed promising indices
+        self.PROMISING_BUFFER = {} # Currently being explored for a second round, includes idx = [23,23] for example
+        self.AVAILABLE_INDICES = set(range(len(train_dataset))) # all remaining datapoint indices to explore
+        self.ENABLE_EXPLORATION = True
+        self.EXPLORATION_BUDGET = 2  # or however many copies you want
+        self.EXPLORATION_THRESHOLD = 4  # observations before discarding
+        self.DEBUG = False
+
         # Args
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -714,6 +725,99 @@ class GRPOTrainer(Trainer):
                     self.reward_funcs[i] = self.accelerator.prepare_model(
                         reward_func, evaluation_mode=True, device_placement=True
                     )
+
+    def add_exploration(self, batch):
+        """
+        Optionally add an exploration index to the current batch.
+
+        - If exploration is enabled and PROMISING_BUFFER is empty, choose a new candidate index to explore.
+        - If already exploring, add the current is promising use it again.
+        - Remove used indices from AVAILABLE_INDICES to avoid repeats.
+        """
+        if not self.ENABLE_EXPLORATION:
+            return batch, []
+
+        print("         Adding exploration, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
+
+        if not self.PROMISING_BUFFER:
+            explore_candidates = list(self.AVAILABLE_INDICES - set(batch))
+            if not explore_candidates:
+                return batch, []
+            chosen = random.choice(explore_candidates)
+            self.PROMISING_BUFFER[chosen] = []
+            self.AVAILABLE_INDICES -= set(batch)
+            self.AVAILABLE_INDICES.discard(chosen)
+
+            print("         Added exploration begin, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
+            return batch + [chosen] * self.EXPLORATION_BUDGET, [chosen]
+        else:
+            assert len(self.PROMISING_BUFFER) == 1
+            chosen = next(iter(self.PROMISING_BUFFER))
+            self.AVAILABLE_INDICES -= set(batch)
+            self.AVAILABLE_INDICES.discard(chosen)
+            print("         ADDed exploration begin, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
+            return batch + [chosen] * self.EXPLORATION_BUDGET, [chosen]
+        
+    def check_replace_update_logic(self, batch_results):
+        """
+        Update exploration and reuse buffers based on batch results.
+
+        - Update PROMISING_BUFFER with new observations.
+        - If enough observations collected and all are 0, discard the candidate.
+            - If any observation is > 0, move candidate to REUSE_BUFFER.
+        - Replace 'hard' samples (all-zero rewards) in batch with items from REUSE_BUFFER.
+        """
+        if not self.ENABLE_EXPLORATION:
+            return batch_results
+
+        if not self.PROMISING_BUFFER:
+            print("         check_replace_update_logic: empty, skip") if self.DEBUG else None
+            return batch_results
+
+        idx = next(iter(self.PROMISING_BUFFER))
+        obs = self.PROMISING_BUFFER[idx]
+        new_obs = batch_results.get(idx)
+        if new_obs is None:
+            return batch_results
+
+        # If we collide with datapoint in actual batch
+        explore_exploit_collided = False
+        if len(new_obs) > self.EXPLORATION_BUDGET:
+            print("         bug occurred, split the data") if self.DEBUG else None
+            batch_results[idx] = new_obs[0:self.num_generations]
+            new_obs = new_obs[self.num_generations:]
+            print("         bug fixed" ,idx, new_obs, batch_results) if self.DEBUG else None
+            explore_exploit_collided = True
+
+        obs.extend(new_obs)
+
+        print("         check_replace_update_logic update: ", self.PROMISING_BUFFER, "REUSE: ", self.REUSE_BUFFER) if self.DEBUG else None
+
+        if len(obs) >= self.EXPLORATION_THRESHOLD and all(r == 0 for r in obs):
+            self.PROMISING_BUFFER.pop(idx)
+            print(f"         Exploration for {idx} yielded all zeros, discarded.") if self.DEBUG else None
+
+        elif len(obs) >= self.num_generations and any(r > 0 for r in obs):
+            self.REUSE_BUFFER.append({idx: self.PROMISING_BUFFER[idx]})
+            self.PROMISING_BUFFER.pop(idx)
+            print(f"         Promising index {idx} confirmed and moved to reuse.") if self.DEBUG else None
+
+        batch_results.pop(idx, None) if not explore_exploit_collided else None
+
+        keys_to_replace = [k for k, v in batch_results.items() if v and all(r == 0 for r in v)]
+        for bad_key in keys_to_replace:
+            if self.REUSE_BUFFER:
+                reuse_dict = self.REUSE_BUFFER.popleft()
+                reuse_idx, reuse_vals = next(iter(reuse_dict.items()))
+                batch_results[reuse_idx] = reuse_vals
+                batch_results.pop(bad_key)
+                print(f"         Replaced hard sample {bad_key} with {reuse_idx}") if self.DEBUG else None
+
+        print("         Final PROMISING:", self.PROMISING_BUFFER, " REUSE:", self.REUSE_BUFFER) if self.DEBUG else None
+
+        return batch_results
+
+
 
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
