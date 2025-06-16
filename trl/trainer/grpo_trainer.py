@@ -552,6 +552,9 @@ class GRPOTrainer(Trainer):
         # This acts as a flag to indicate that the warning has already been issued.
         model.warnings_issued["estimate_tokens"] = True
 
+        ## SMART SAMPLER NEEDS IDs
+        train_dataset = train_dataset.add_column("__idx__", list(range(len(train_dataset))))
+
         super().__init__(
             model=model,
             args=args,
@@ -726,7 +729,7 @@ class GRPOTrainer(Trainer):
                         reward_func, evaluation_mode=True, device_placement=True
                     )
 
-    def add_exploration(self, batch):
+    def add_exploration(self, batch: list[dict]):
         """
         Optionally add an exploration index to the current batch.
 
@@ -736,27 +739,39 @@ class GRPOTrainer(Trainer):
         """
         if not self.ENABLE_EXPLORATION:
             return batch, []
+        
+        # Extract IDs from current batch
+        batch_ids = {sample["__idx__"] for sample in batch} 
+
+        # Always remove current batch indices from AVAILABLE_INDICES
+        self.AVAILABLE_INDICES -= batch_ids
 
         print("         Adding exploration, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
 
+        # Case 1: No active exploration — start one
         if not self.PROMISING_BUFFER:
-            explore_candidates = list(self.AVAILABLE_INDICES - set(batch))
+            explore_candidates = list(self.AVAILABLE_INDICES)
             if not explore_candidates:
                 return batch, []
-            chosen = random.choice(explore_candidates)
-            self.PROMISING_BUFFER[chosen] = []
-            self.AVAILABLE_INDICES -= set(batch)
-            self.AVAILABLE_INDICES.discard(chosen)
 
-            print("         Added exploration begin, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
-            return batch + [chosen] * self.EXPLORATION_BUDGET, [chosen]
-        else:
-            assert len(self.PROMISING_BUFFER) == 1
-            chosen = next(iter(self.PROMISING_BUFFER))
-            self.AVAILABLE_INDICES -= set(batch)
-            self.AVAILABLE_INDICES.discard(chosen)
-            print("         ADDed exploration begin, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
-            return batch + [chosen] * self.EXPLORATION_BUDGET, [chosen]
+            chosen_idx = random.choice(explore_candidates)
+            self.PROMISING_BUFFER[chosen_idx] = []
+            self.AVAILABLE_INDICES.discard(chosen_idx)
+
+            print("         Added new exploration, promising:", self.PROMISING_BUFFER) if self.DEBUG else None
+
+            chosen_sample = self.train_dataset[chosen_idx]
+            return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
+        # Case 2: Already exploring — repeat current one
+        assert len(self.PROMISING_BUFFER) == 1
+        chosen_idx = next(iter(self.PROMISING_BUFFER))
+        self.AVAILABLE_INDICES.discard(chosen_idx)
+
+        print("         Continuing exploration, promising:", self.PROMISING_BUFFER) if self.DEBUG else None
+
+        chosen_sample = self.train_dataset[chosen_idx]
+        return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
+    
         
     def check_replace_update_logic(self, batch_results):
         """
@@ -1098,6 +1113,11 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
+        # SMART SAMPLING: Optionally add exploratory prompts
+        if self.ENABLE_EXPLORATION:
+            inputs, explored = self.add_exploration(inputs)
+            self.current_exploration = explored  # optional: track for logging or debugging
+    
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         prompt_inputs = self.processing_class(
