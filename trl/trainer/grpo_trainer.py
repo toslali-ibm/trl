@@ -1168,7 +1168,7 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
-        torch.distributed.breakpoint()
+        # torch.distributed.breakpoint()
         # SMART SAMPLING: Optionally add exploratory prompts
         if self.ENABLE_EXPLORATION:
             inputs, explored = self.add_exploration(inputs)
@@ -1181,7 +1181,7 @@ class GRPOTrainer(Trainer):
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-        torch.distributed.breakpoint()
+        # torch.distributed.breakpoint()
 
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
@@ -1192,20 +1192,21 @@ class GRPOTrainer(Trainer):
             # First, update the vLLM weights if needed
             if self.state.global_step != self._last_loaded_step:
                 torch.distributed.breakpoint()
-                self._move_model_to_vllm()
+                # self._move_model_to_vllm()
                 torch.distributed.breakpoint()
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
-                torch.distributed.breakpoint()
+                # torch.distributed.breakpoint()
+                print("All prompts text", all_prompts_text)
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                     # prompt individually.
                     ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
-                    torch.distributed.breakpoint()
+                    print("ordered_set_of_prompts", ordered_set_of_prompts)
                     with profiling_context(self, "vLLM.generate"):
                         completion_ids = self.vllm_client.generate(
                             prompts=ordered_set_of_prompts,
@@ -1222,13 +1223,16 @@ class GRPOTrainer(Trainer):
                     completion_ids = [None] * len(all_prompts_text)
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
-                torch.distributed.breakpoint()
+                print("completion_ids", completion_ids)
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
+                print("completion_ids after broadcast", completion_ids)
                 process_slice = slice(
                     self.accelerator.process_index * len(prompts),
                     (self.accelerator.process_index + 1) * len(prompts),
                 )
                 completion_ids = completion_ids[process_slice]
+
+                print("completion_ids sliced", completion_ids)
 
             # Generate completions using colocated vLLM instances: each device holds vLLM copy and work on their own batch of prompts
             elif self.vllm_mode == "colocate":
@@ -1273,6 +1277,9 @@ class GRPOTrainer(Trainer):
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
             completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+
+            print("completion_ids and prompt_completion_ids", completion_ids, prompt_completion_ids)
+
         else:
             # Regular generation path
             with unwrap_model_for_generation(
@@ -1401,7 +1408,22 @@ class GRPOTrainer(Trainer):
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
 
-        torch.distributed.breakpoint()
+
+        print("Before pruning:")
+        print("  prompts =", prompts)
+        print("  prompts_text =", prompts_text)
+        print("  prompt_ids =", prompt_ids)
+        print("  prompt_mask =", prompt_mask)
+        print("  completion_ids =", completion_ids)
+        print("  completion_mask =", completion_mask)
+        print("  completions =", completions)
+        print("  completions_text =", completions_text)
+        print("  completion_lengths =", completion_lengths)
+        print("  is_eos =", is_eos)
+        print("  rewards =", rewards)
+        print("  rewards_per_func =", rewards_per_func)
+        print("  advantages =", advantages)
+        
         # Prune extra exploration generations BEFORE slicing
         (
             prompts,
@@ -1432,14 +1454,31 @@ class GRPOTrainer(Trainer):
             rewards_per_func=rewards_per_func,
             advantages=advantages,
         )
-        torch.distributed.breakpoint()
+        print("After pruning:")
+        print("  prompts =", prompts)
+        print("  prompts_text =", prompts_text)
+        print("  prompt_ids =", prompt_ids)
+        print("  prompt_mask =", prompt_mask)
+        print("  completion_ids =", completion_ids)
+        print("  completion_mask =", completion_mask)
+        print("  completions =", completions)
+        print("  completions_text =", completions_text)
+        print("  completion_lengths =", completion_lengths)
+        print("  is_eos =", is_eos)
+        print("  rewards =", rewards)
+        print("  rewards_per_func =", rewards_per_func)
+        print("  advantages =", advantages)
+
         # Slice to keep only the local part of the data
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
         )
         all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
+        print("all_process_advantages", all_process_advantages)
         advantages = advantages[process_slice]
+
+        print("process advantages", advantages)
 
         # Log the metrics
         if mode == "train":
