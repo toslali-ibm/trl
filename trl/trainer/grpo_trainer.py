@@ -400,8 +400,9 @@ class GRPOTrainer(Trainer):
         self.PROMISING_BUFFER = {} # Currently being explored for a second round, includes idx = [23,23] for example
         self.AVAILABLE_INDICES = set(range(len(train_dataset))) # all remaining datapoint indices to explore
         self.ENABLE_EXPLORATION = True
-        self.EXPLORATION_BUDGET = 2  # or however many copies you want
+        self.EXPLORATION_BUDGET = self.num_generations  # for now, num generations exploration because of vllm optimization (unique prompt)- todo however many copies you want 
         self.EXPLORATION_THRESHOLD = 4  # observations before discarding
+        self.EXPLORATION_MEMORY = [] # for debugging purposes
         self.DEBUG = False
 
         # Args
@@ -831,6 +832,60 @@ class GRPOTrainer(Trainer):
         print("         Final PROMISING:", self.PROMISING_BUFFER, " REUSE:", self.REUSE_BUFFER) if self.DEBUG else None
 
         return batch_results
+        
+    def _prune_generations(
+        self,
+        prompts,
+        prompts_text,
+        prompt_ids,
+        prompt_mask,
+        completion_ids,
+        completion_mask,
+        completions,
+        completions_text,
+        completion_lengths,
+        is_eos,
+        rewards,
+        rewards_per_func,
+        advantages
+    ):
+        # Get exploration index (should be 1 if exploring)
+        exploration_idx = next(iter(self.PROMISING_BUFFER)) if self.PROMISING_BUFFER else None
+
+        if exploration_idx is None:
+            print("----- noit exploring")
+            return (
+                prompts, prompts_text, prompt_ids, prompt_mask, completion_ids,
+                completion_mask, completions, completions_text, completion_lengths,
+                is_eos, rewards, rewards_per_func, advantages
+            )
+
+        # Mask to keep only real samples
+        keep_mask = torch.tensor(
+            [p.get("__idx__", -1) != exploration_idx for p in prompts],
+            dtype=torch.bool,
+            device=completion_ids.device
+        )
+        torch.distributed.breakpoint()
+
+        def filter_list(lst): return [x for x, keep in zip(lst, keep_mask) if keep]
+        def filter_tensor(t): return t[keep_mask] if t is not None else None
+
+        return (
+            filter_list(prompts),
+            filter_list(prompts_text),
+            filter_tensor(prompt_ids),
+            filter_tensor(prompt_mask),
+            filter_tensor(completion_ids),
+            filter_tensor(completion_mask),
+            filter_list(completions),
+            filter_list(completions_text),
+            filter_tensor(completion_lengths),
+            filter_tensor(is_eos),
+            filter_tensor(rewards),
+            filter_tensor(rewards_per_func),
+            filter_tensor(advantages),
+        )
 
 
 
@@ -1113,6 +1168,7 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
+        torch.distributed.breakpoint()
         # SMART SAMPLING: Optionally add exploratory prompts
         if self.ENABLE_EXPLORATION:
             inputs, explored = self.add_exploration(inputs)
@@ -1125,6 +1181,7 @@ class GRPOTrainer(Trainer):
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+        torch.distributed.breakpoint()
 
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
@@ -1139,12 +1196,14 @@ class GRPOTrainer(Trainer):
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
+                torch.distributed.breakpoint()
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                     # prompt individually.
                     ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+                    torch.distributed.breakpoint()
                     with profiling_context(self, "vLLM.generate"):
                         completion_ids = self.vllm_client.generate(
                             prompts=ordered_set_of_prompts,
@@ -1161,6 +1220,7 @@ class GRPOTrainer(Trainer):
                     completion_ids = [None] * len(all_prompts_text)
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
+                torch.distributed.breakpoint()
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
                 process_slice = slice(
                     self.accelerator.process_index * len(prompts),
@@ -1339,6 +1399,38 @@ class GRPOTrainer(Trainer):
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
 
+        torch.distributed.breakpoint()
+        # Prune extra exploration generations BEFORE slicing
+        (
+            prompts,
+            prompts_text,
+            prompt_ids,
+            prompt_mask,
+            completion_ids,
+            completion_mask,
+            completions,
+            completions_text,
+            completion_lengths,
+            is_eos,
+            rewards,
+            rewards_per_func,
+            advantages
+        ) = self._prune_generations(
+            prompts=prompts,
+            prompts_text=prompts_text,
+            prompt_ids=prompt_ids,
+            prompt_mask=prompt_mask,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            completions=completions,
+            completions_text=completions_text,
+            completion_lengths=completion_lengths,
+            is_eos=is_eos,
+            rewards=rewards,
+            rewards_per_func=rewards_per_func,
+            advantages=advantages,
+        )
+        torch.distributed.breakpoint()
         # Slice to keep only the local part of the data
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
