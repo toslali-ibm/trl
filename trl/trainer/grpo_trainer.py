@@ -866,7 +866,7 @@ class GRPOTrainer(Trainer):
             dtype=torch.bool,
             device=completion_ids.device
         )
-        torch.distributed.breakpoint()
+        # torch.distributed.breakpoint()
 
         def filter_list(lst): return [x for x, keep in zip(lst, keep_mask) if keep]
         def filter_tensor(t): return t[keep_mask] if t is not None else None
@@ -1191,9 +1191,9 @@ class GRPOTrainer(Trainer):
         if self.use_vllm:
             # First, update the vLLM weights if needed
             if self.state.global_step != self._last_loaded_step:
-                torch.distributed.breakpoint()
-                # self._move_model_to_vllm()
-                torch.distributed.breakpoint()
+                # torch.distributed.breakpoint()
+                self._move_model_to_vllm()
+                # torch.distributed.breakpoint()
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
