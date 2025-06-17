@@ -401,8 +401,7 @@ class GRPOTrainer(Trainer):
         self.AVAILABLE_INDICES = set(range(len(train_dataset))) # all remaining datapoint indices to explore
         self.ENABLE_EXPLORATION = True
         self.EXPLORATION_BUDGET = args.num_generations # for now, num generations exploration because of vllm optimization (unique prompt)- todo however many copies you want 
-        self.EXPLORATION_THRESHOLD = 4  # observations before discarding
-        self.EXPLORATION_MEMORY = [] # for debugging purposes
+        self.EXPLORATION_THRESHOLD = args.num_generations # observations before discarding
         self.DEBUG = False
 
         # Args
@@ -773,87 +772,88 @@ class GRPOTrainer(Trainer):
         chosen_sample = self.train_dataset[chosen_idx]
         return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
     
-
-    def _prune_generations(
-        self,
-        prompts,
-        prompts_text,
-        prompt_ids,
-        prompt_mask,
-        completion_ids,
-        completion_mask,
-        completions,
-        completions_text,
-        completion_lengths,
-        is_eos,
-        rewards,
-        rewards_per_func,
-        advantages,
+    def adjust_batch(
+        self, prompts, prompts_text, prompt_ids, prompt_mask,
+        completion_ids, completion_mask, completions, completions_text,
+        completion_lengths, is_eos, rewards, rewards_per_func
     ):
-        if not self.ENABLE_EXPLORATION or len(self.PROMISING_BUFFER) == 0:
-            return (
-                prompts,
-                prompts_text,
-                prompt_ids,
-                prompt_mask,
-                completion_ids,
-                completion_mask,
-                completions,
-                completions_text,
-                completion_lengths,
-                is_eos,
-                rewards,
-                rewards_per_func,
-                advantages,
-            )
+        print(locals())
+        if not self.ENABLE_EXPLORATION or not self.PROMISING_BUFFER:
+            return (prompts, prompts_text, prompt_ids, prompt_mask,
+                    completion_ids, completion_mask, completions, completions_text,
+                    completion_lengths, is_eos, rewards, rewards_per_func)
 
         assert len(self.PROMISING_BUFFER) == 1
-        exploration_idx = next(iter(self.PROMISING_BUFFER))
-
-        # Slice to isolate exploration entries (last N items)
+        
+        chosen_idx = next(iter(self.PROMISING_BUFFER))
         n = self.EXPLORATION_BUDGET
-        exploration_data = {
-            "prompts": prompts[-n:],
-            "prompts_text": prompts_text[-n:],
-            "prompt_ids": prompt_ids[-n:],
-            "prompt_mask": prompt_mask[-n:],
-            "completion_ids": completion_ids[-n:],
-            "completion_mask": completion_mask[-n:],
-            "completions": completions[-n:],
-            "completions_text": completions_text[-n:],
-            "completion_lengths": completion_lengths[-n:],
-            "is_eos": is_eos[-n:],
-            "rewards": rewards[-n:],
-            "rewards_per_func": rewards_per_func[-n:],
-            "advantages": advantages[-n:],
+        regular_slice = slice(0, -n)
+        exploration_slice = slice(-n, None)
+
+        buffer = self.PROMISING_BUFFER.setdefault(chosen_idx, {})
+        inputs_to_store = {
+            "prompts": prompts[exploration_slice],
+            "prompts_text": prompts_text[exploration_slice],
+            "prompt_ids": prompt_ids[exploration_slice],
+            "prompt_mask": prompt_mask[exploration_slice],
+            "completion_ids": completion_ids[exploration_slice],
+            "completion_mask": completion_mask[exploration_slice],
+            "completions": completions[exploration_slice],
+            "completions_text": completions_text[exploration_slice],
+            "completion_lengths": completion_lengths[exploration_slice],
+            "is_eos": is_eos[exploration_slice],
+            "rewards": rewards[exploration_slice],
+            "rewards_per_func": rewards_per_func[exploration_slice],
         }
 
-        # Merge into buffer
-        if exploration_idx not in self.PROMISING_BUFFER:
-            self.PROMISING_BUFFER[exploration_idx] = exploration_data
-        else:
-            for k, v in exploration_data.items():
-                existing = self.PROMISING_BUFFER[exploration_idx].get(k, [])
-                self.PROMISING_BUFFER[exploration_idx][k] = existing + v
+        for key, val in inputs_to_store.items():
+            if key in buffer:
+                buffer[key] = torch.cat([buffer[key], val], dim=0) if isinstance(val, torch.Tensor) else buffer[key] + val
+            else:
+                buffer[key] = val
 
-        # Return pruned (non-exploration) outputs
-        return (
-            prompts[:-n],
-            prompts_text[:-n],
-            prompt_ids[:-n],
-            prompt_mask[:-n],
-            completion_ids[:-n],
-            completion_mask[:-n],
-            completions[:-n],
-            completions_text[:-n],
-            completion_lengths[:-n],
-            is_eos[:-n],
-            rewards[:-n],
-            rewards_per_func[:-n],
-            advantages[:-n],
-        )
+        if "rewards" in buffer:
+            rewards_len = len(buffer["rewards"])
+            all_zero = buffer["rewards"].sum().item() == 0
 
+            if all_zero and rewards_len >= self.EXPLORATION_BUDGET:
+                # Discard failed exploratory sample when EXPLORATION_BUDGET reached
+                self.PROMISING_BUFFER.pop(chosen_idx)
+            elif not all_zero and rewards_len >= self.num_generations:
+                # Move good sample to REUSE_BUFFER when num_generations reached
+                self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
 
+        
+        if len(self.REUSE_BUFFER) > 0: # if there are good samples, let's go ahead and check if we can replace any
+            rewards_regular = rewards[regular_slice]
+            i = 0 # Iterate in chunks of num_gen
+            while i < len(rewards_regular):
+                reward_chunk = rewards_regular[i:i + self.num_generations]
+                
+                if torch.all(reward_chunk == 0) and len(self.REUSE_BUFFER) > 0:
+                    idx, reuse_data = self.REUSE_BUFFER.popleft()
+            
+                    for field_name in reuse_data:
+                        field = locals()[field_name]
+                        replacement = reuse_data[field_name]
+                        assert len(replacement) == self.num_generations, f"Mismatch in length for {field_name}"
+                        if isinstance(field, list):
+                            field[i:i+self.num_generations] = replacement
+                        elif torch.is_tensor(field):
+                            field[i:i+self.num_generations] = replacement
+                        else:
+                            raise TypeError(f"Unhandled type for field {field_name}")
+
+                if len(self.REUSE_BUFFER) == 0:
+                    break
+                
+                i += self.num_generations
+
+        return tuple(x[regular_slice] for x in [
+            prompts, prompts_text, prompt_ids, prompt_mask,
+            completion_ids, completion_mask, completions, completions_text,
+            completion_lengths, is_eos, rewards, rewards_per_func
+        ])
 
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
@@ -1367,19 +1367,7 @@ class GRPOTrainer(Trainer):
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
-        is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
-
-        # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards - mean_grouped_rewards
-        if self.scale_rewards:
-            advantages = advantages / (std_grouped_rewards + 1e-4)
-
-
+        # Hook2: now that we have the rewards, we can adjust the batch accordingly!
         print("Before pruning:")
         print("  prompts =", prompts)
         print("  prompts_text =", prompts_text)
@@ -1393,7 +1381,6 @@ class GRPOTrainer(Trainer):
         print("  is_eos =", is_eos)
         print("  rewards =", rewards)
         print("  rewards_per_func =", rewards_per_func)
-        print("  advantages =", advantages)
         
         # Prune extra exploration generations BEFORE slicing
         (
@@ -1408,9 +1395,8 @@ class GRPOTrainer(Trainer):
             completion_lengths,
             is_eos,
             rewards,
-            rewards_per_func,
-            advantages
-        ) = self._prune_generations(
+            rewards_per_func
+        ) = self.adjust_batch(
             prompts=prompts,
             prompts_text=prompts_text,
             prompt_ids=prompt_ids,
@@ -1423,7 +1409,6 @@ class GRPOTrainer(Trainer):
             is_eos=is_eos,
             rewards=rewards,
             rewards_per_func=rewards_per_func,
-            advantages=advantages,
         )
         print("After pruning:")
         print("  prompts =", prompts)
@@ -1438,7 +1423,18 @@ class GRPOTrainer(Trainer):
         print("  is_eos =", is_eos)
         print("  rewards =", rewards)
         print("  rewards_per_func =", rewards_per_func)
-        print("  advantages =", advantages)
+
+        # Compute grouped-wise rewards
+        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
+        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
+        is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
+
+        # Normalize the rewards to compute the advantages
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        advantages = rewards - mean_grouped_rewards
+        if self.scale_rewards:
+            advantages = advantages / (std_grouped_rewards + 1e-4)
 
         # Slice to keep only the local part of the data
         process_slice = slice(
