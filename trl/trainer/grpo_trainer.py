@@ -756,7 +756,7 @@ class GRPOTrainer(Trainer):
                 return batch, []
 
             chosen_idx = random.choice(explore_candidates)
-            self.PROMISING_BUFFER[chosen_idx] = []
+            self.PROMISING_BUFFER[chosen_idx] = {}
             self.AVAILABLE_INDICES.discard(chosen_idx)
 
             print("         Added new exploration, promising:", self.PROMISING_BUFFER) if self.DEBUG else None
@@ -773,66 +773,6 @@ class GRPOTrainer(Trainer):
         chosen_sample = self.train_dataset[chosen_idx]
         return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
     
-        
-    def check_replace_update_logic(self, batch_results):
-        """
-        Update exploration and reuse buffers based on batch results.
-
-        - Update PROMISING_BUFFER with new observations.
-        - If enough observations collected and all are 0, discard the candidate.
-            - If any observation is > 0, move candidate to REUSE_BUFFER.
-        - Replace 'hard' samples (all-zero rewards) in batch with items from REUSE_BUFFER.
-        """
-        if not self.ENABLE_EXPLORATION:
-            return batch_results
-
-        if not self.PROMISING_BUFFER:
-            print("         check_replace_update_logic: empty, skip") if self.DEBUG else None
-            return batch_results
-
-        idx = next(iter(self.PROMISING_BUFFER))
-        obs = self.PROMISING_BUFFER[idx]
-        new_obs = batch_results.get(idx)
-        if new_obs is None:
-            return batch_results
-
-        # If we collide with datapoint in actual batch
-        explore_exploit_collided = False
-        if len(new_obs) > self.EXPLORATION_BUDGET:
-            print("         bug occurred, split the data") if self.DEBUG else None
-            batch_results[idx] = new_obs[0:self.num_generations]
-            new_obs = new_obs[self.num_generations:]
-            print("         bug fixed" ,idx, new_obs, batch_results) if self.DEBUG else None
-            explore_exploit_collided = True
-
-        obs.extend(new_obs)
-
-        print("         check_replace_update_logic update: ", self.PROMISING_BUFFER, "REUSE: ", self.REUSE_BUFFER) if self.DEBUG else None
-
-        if len(obs) >= self.EXPLORATION_THRESHOLD and all(r == 0 for r in obs):
-            self.PROMISING_BUFFER.pop(idx)
-            print(f"         Exploration for {idx} yielded all zeros, discarded.") if self.DEBUG else None
-
-        elif len(obs) >= self.num_generations and any(r > 0 for r in obs):
-            self.REUSE_BUFFER.append({idx: self.PROMISING_BUFFER[idx]})
-            self.PROMISING_BUFFER.pop(idx)
-            print(f"         Promising index {idx} confirmed and moved to reuse.") if self.DEBUG else None
-
-        batch_results.pop(idx, None) if not explore_exploit_collided else None
-
-        keys_to_replace = [k for k, v in batch_results.items() if v and all(r == 0 for r in v)]
-        for bad_key in keys_to_replace:
-            if self.REUSE_BUFFER:
-                reuse_dict = self.REUSE_BUFFER.popleft()
-                reuse_idx, reuse_vals = next(iter(reuse_dict.items()))
-                batch_results[reuse_idx] = reuse_vals
-                batch_results.pop(bad_key)
-                print(f"         Replaced hard sample {bad_key} with {reuse_idx}") if self.DEBUG else None
-
-        print("         Final PROMISING:", self.PROMISING_BUFFER, " REUSE:", self.REUSE_BUFFER) if self.DEBUG else None
-
-        return batch_results
-                
 
     def _prune_generations(
         self,
