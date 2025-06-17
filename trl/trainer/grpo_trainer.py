@@ -1154,8 +1154,14 @@ class GRPOTrainer(Trainer):
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        # Not the max in the current batch, but the max prompt length to fix smart sampling issue
         prompt_inputs = self.processing_class(
-            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+            text=prompts_text,
+            return_tensors="pt",
+            padding="max_length",  # explicitly pad to max_length
+            max_length=self.max_prompt_length,
+            padding_side="left",
+            add_special_tokens=False
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
