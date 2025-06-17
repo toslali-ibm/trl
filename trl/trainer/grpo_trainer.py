@@ -1158,6 +1158,7 @@ class GRPOTrainer(Trainer):
         prompt_inputs = self.processing_class(
             text=prompts_text,
             return_tensors="pt",
+            truncation=True,  # shoould not be larger than max_prompt_length
             padding="max_length",  # explicitly pad to max_length
             max_length=self.max_prompt_length,
             padding_side="left",
