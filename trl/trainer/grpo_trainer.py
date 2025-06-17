@@ -1263,6 +1263,7 @@ class GRPOTrainer(Trainer):
                     all_prompts_text = prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
+                    print("All prompts text", all_prompts_text)
                     all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
 
                 completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
