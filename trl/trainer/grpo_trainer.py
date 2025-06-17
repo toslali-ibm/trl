@@ -1709,7 +1709,7 @@ class GRPOTrainer(Trainer):
         if hasattr(self.model.config, "unsloth_version"):
             tags.add("unsloth")
 
-        tags.update(self._tag_names)
+        # tags.update(self._tag_names)
 
         citation = textwrap.dedent(
             """\
