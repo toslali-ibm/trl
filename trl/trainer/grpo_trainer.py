@@ -833,6 +833,7 @@ class GRPOTrainer(Trainer):
 
         return batch_results
                 
+
     def _prune_generations(
         self,
         prompts,
@@ -849,9 +850,7 @@ class GRPOTrainer(Trainer):
         rewards_per_func,
         advantages,
     ):
-        n = self.EXPLORATION_BUDGET
         if not self.ENABLE_EXPLORATION or len(self.PROMISING_BUFFER) == 0:
-            print("Exploration disabled or not beuing explored this round", self.PROMISING_BUFFER)
             return (
                 prompts,
                 prompts_text,
@@ -868,7 +867,11 @@ class GRPOTrainer(Trainer):
                 advantages,
             )
 
-        # Slice off exploration portion (at the end)
+        assert len(self.PROMISING_BUFFER) == 1
+        exploration_idx = next(iter(self.PROMISING_BUFFER))
+
+        # Slice to isolate exploration entries (last N items)
+        n = self.EXPLORATION_BUDGET
         exploration_data = {
             "prompts": prompts[-n:],
             "prompts_text": prompts_text[-n:],
@@ -885,24 +888,15 @@ class GRPOTrainer(Trainer):
             "advantages": advantages[-n:],
         }
 
-        if len(self.PROMISING_BUFFER) != 1:
-            raise ValueError(f"Expected exactly one exploration index, got {list(self.PROMISING_BUFFER.keys())}")
-
-        exploration_idx = next(iter(self.PROMISING_BUFFER))
-
-        # If the buffer is empty or uninitialized for this key, initialize
-        if not self.PROMISING_BUFFER[exploration_idx]:
-            self.PROMISING_BUFFER[exploration_idx] = {k: list(v) for k, v in exploration_data.items()}
+        # Merge into buffer
+        if exploration_idx not in self.PROMISING_BUFFER:
+            self.PROMISING_BUFFER[exploration_idx] = exploration_data
         else:
-            for k in exploration_data:
-                if k not in self.PROMISING_BUFFER[exploration_idx] or self.PROMISING_BUFFER[exploration_idx][k] is None:
-                    self.PROMISING_BUFFER[exploration_idx][k] = list(exploration_data[k])
-                else:
-                    self.PROMISING_BUFFER[exploration_idx][k] += exploration_data[k]
+            for k, v in exploration_data.items():
+                existing = self.PROMISING_BUFFER[exploration_idx].get(k, [])
+                self.PROMISING_BUFFER[exploration_idx][k] = existing + v
 
-        print("see promising buffer now", self.PROMISING_BUFFER)
-
-        # Return pruned values
+        # Return pruned (non-exploration) outputs
         return (
             prompts[:-n],
             prompts_text[:-n],
