@@ -832,7 +832,7 @@ class GRPOTrainer(Trainer):
         print("         Final PROMISING:", self.PROMISING_BUFFER, " REUSE:", self.REUSE_BUFFER) if self.DEBUG else None
 
         return batch_results
-        
+                
     def _prune_generations(
         self,
         prompts,
@@ -847,45 +847,76 @@ class GRPOTrainer(Trainer):
         is_eos,
         rewards,
         rewards_per_func,
-        advantages
+        advantages,
     ):
-        # Get exploration index (should be 1 if exploring)
-        exploration_idx = next(iter(self.PROMISING_BUFFER)) if self.PROMISING_BUFFER else None
-        print("-----Exploring ", exploration_idx)
-
-        if exploration_idx is None:
-            print("----- not exploring")
+        n = self.EXPLORATION_BUDGET
+        if not self.ENABLE_EXPLORATION or len(self.PROMISING_BUFFER) == 0:
+            print("Exploration disabled or not beuing explored this round", self.PROMISING_BUFFER)
             return (
-                prompts, prompts_text, prompt_ids, prompt_mask, completion_ids,
-                completion_mask, completions, completions_text, completion_lengths,
-                is_eos, rewards, rewards_per_func, advantages
+                prompts,
+                prompts_text,
+                prompt_ids,
+                prompt_mask,
+                completion_ids,
+                completion_mask,
+                completions,
+                completions_text,
+                completion_lengths,
+                is_eos,
+                rewards,
+                rewards_per_func,
+                advantages,
             )
 
-        # Mask to keep only real samples
-        keep_mask = torch.tensor(
-            [p.get("__idx__", -1) != exploration_idx for p in prompts],
-            dtype=torch.bool,
-            device=completion_ids.device
-        )
-        # torch.distributed.breakpoint()
+        # Slice off exploration portion (at the end)
+        exploration_data = {
+            "prompts": prompts[-n:],
+            "prompts_text": prompts_text[-n:],
+            "prompt_ids": prompt_ids[-n:],
+            "prompt_mask": prompt_mask[-n:],
+            "completion_ids": completion_ids[-n:],
+            "completion_mask": completion_mask[-n:],
+            "completions": completions[-n:],
+            "completions_text": completions_text[-n:],
+            "completion_lengths": completion_lengths[-n:],
+            "is_eos": is_eos[-n:],
+            "rewards": rewards[-n:],
+            "rewards_per_func": rewards_per_func[-n:],
+            "advantages": advantages[-n:],
+        }
 
-        def filter_list(lst): return [x for x, keep in zip(lst, keep_mask) if keep]
-        def filter_tensor(t): return t[keep_mask] if t is not None else None
+        if len(self.PROMISING_BUFFER) != 1:
+            raise ValueError(f"Expected exactly one exploration index, got {list(self.PROMISING_BUFFER.keys())}")
 
+        exploration_idx = next(iter(self.PROMISING_BUFFER))
+
+        # If the buffer is empty or uninitialized for this key, initialize
+        if not self.PROMISING_BUFFER[exploration_idx]:
+            self.PROMISING_BUFFER[exploration_idx] = {k: list(v) for k, v in exploration_data.items()}
+        else:
+            for k in exploration_data:
+                if k not in self.PROMISING_BUFFER[exploration_idx] or self.PROMISING_BUFFER[exploration_idx][k] is None:
+                    self.PROMISING_BUFFER[exploration_idx][k] = list(exploration_data[k])
+                else:
+                    self.PROMISING_BUFFER[exploration_idx][k] += exploration_data[k]
+
+        print("see promising buffer now", self.PROMISING_BUFFER)
+
+        # Return pruned values
         return (
-            filter_list(prompts),
-            filter_list(prompts_text),
-            filter_tensor(prompt_ids),
-            filter_tensor(prompt_mask),
-            filter_tensor(completion_ids),
-            filter_tensor(completion_mask),
-            filter_list(completions),
-            filter_list(completions_text),
-            filter_tensor(completion_lengths),
-            filter_tensor(is_eos),
-            filter_tensor(rewards),
-            filter_tensor(rewards_per_func),
-            filter_tensor(advantages),
+            prompts[:-n],
+            prompts_text[:-n],
+            prompt_ids[:-n],
+            prompt_mask[:-n],
+            completion_ids[:-n],
+            completion_mask[:-n],
+            completions[:-n],
+            completions_text[:-n],
+            completion_lengths[:-n],
+            is_eos[:-n],
+            rewards[:-n],
+            rewards_per_func[:-n],
+            advantages[:-n],
         )
 
 
@@ -1170,11 +1201,15 @@ class GRPOTrainer(Trainer):
         mode = "train" if self.model.training else "eval"
 
         # torch.distributed.breakpoint()
+        print("Inputs before exploration", inputs)
         # SMART SAMPLING: Optionally add exploratory prompts
         if self.ENABLE_EXPLORATION:
             inputs, explored = self.add_exploration(inputs)
             self.current_exploration = explored  # optional: track for logging or debugging
-    
+
+        print("Inputs after exploration", inputs)
+        print("Exploring", self.current_exploration)
+
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         prompt_inputs = self.processing_class(
