@@ -399,10 +399,10 @@ class GRPOTrainer(Trainer):
         self.REUSE_BUFFER = deque() # FIFO for confirmed promising indices
         self.PROMISING_BUFFER = {} # Currently being explored for a second round, includes idx = [23,23] for example
         self.AVAILABLE_INDICES = set(range(len(train_dataset))) # all remaining datapoint indices to explore
-        self.ENABLE_EXPLORATION = True
+        self.ENABLE_EXPLORATION = args.smart_sampling
         self.EXPLORATION_BUDGET = args.num_generations # for now, num generations exploration because of vllm optimization (unique prompt)- todo however many copies you want 
         self.EXPLORATION_THRESHOLD = args.num_generations # observations before discarding
-        self.DEBUG = False
+        self.DEBUG = True
 
         # Args
         if args is None:
