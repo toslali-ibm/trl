@@ -851,9 +851,10 @@ class GRPOTrainer(Trainer):
     ):
         # Get exploration index (should be 1 if exploring)
         exploration_idx = next(iter(self.PROMISING_BUFFER)) if self.PROMISING_BUFFER else None
+        print("-----Exploring ", exploration_idx)
 
         if exploration_idx is None:
-            print("----- noit exploring")
+            print("----- not exploring")
             return (
                 prompts, prompts_text, prompt_ids, prompt_mask, completion_ids,
                 completion_mask, completions, completions_text, completion_lengths,
