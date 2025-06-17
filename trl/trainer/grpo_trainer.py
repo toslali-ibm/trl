@@ -824,6 +824,8 @@ class GRPOTrainer(Trainer):
             elif not all_zero and rewards_len >= self.num_generations:
                 # Move good sample to REUSE_BUFFER when num_generations reached
                 self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
+            else: 
+                raise NotImplementedError
 
         # if there are good samples, let's go ahead and check if we can replace any
         if len(self.REUSE_BUFFER) > 0:
@@ -839,7 +841,7 @@ class GRPOTrainer(Trainer):
                         field = locals()[field_name]
                         replacement = reuse_data[field_name]
                         assert len(replacement) == self.num_generations, f"Mismatch in length for {field_name}"
-                        print("-----REPLACING LOGIC ACTIVATED! ")
+                        print("-----REPLACING LOGIC ACTIVATED for ", field_name)
                         if isinstance(field, list):
                             field[i:i+self.num_generations] = replacement
                         elif torch.is_tensor(field):
@@ -1375,18 +1377,19 @@ class GRPOTrainer(Trainer):
 
         # Hook2: now that we have the rewards, we can adjust the batch accordingly!
         print(f"""Before pruning:
-        prompts = {prompts}
-        prompts_text = {prompts_text}
-        prompt_ids = {prompt_ids}
-        prompt_mask = {prompt_mask}
-        completion_ids = {completion_ids}
-        completion_mask = {completion_mask}
-        completions = {completions}
-        completions_text = {completions_text}
-        completion_lengths = {completion_lengths}
-        is_eos = {is_eos}
-        rewards = {rewards}
-        rewards_per_func = {rewards_per_func}""") if self.DEBUG else None
+            prompts = {prompts} (len = {len(prompts)})
+            prompts_text = {prompts_text} (len = {len(prompts_text)})
+            prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
+            prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
+            completion_ids = {completion_ids} (shape = {completion_ids.shape})
+            completion_mask = {completion_mask} (shape = {completion_mask.shape})
+            completions = {completions} (len = {len(completions)})
+            completions_text = {completions_text} (len = {len(completions_text)})
+            completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
+            is_eos = {is_eos} (shape = {is_eos.shape})
+            rewards = {rewards} (shape = {rewards.shape})
+            rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
+        """) if self.DEBUG else None
         
         # Prune extra exploration generations BEFORE slicing
         (prompts, prompts_text, prompt_ids, prompt_mask,
@@ -1397,18 +1400,19 @@ class GRPOTrainer(Trainer):
             completion_lengths, is_eos, rewards, rewards_per_func)
 
         print(f"""After pruning:
-        prompts = {prompts}
-        prompts_text = {prompts_text}
-        prompt_ids = {prompt_ids}
-        prompt_mask = {prompt_mask}
-        completion_ids = {completion_ids}
-        completion_mask = {completion_mask}
-        completions = {completions}
-        completions_text = {completions_text}
-        completion_lengths = {completion_lengths}
-        is_eos = {is_eos}
-        rewards = {rewards}
-        rewards_per_func = {rewards_per_func}""") if self.DEBUG else None
+            prompts = {prompts} (len = {len(prompts)})
+            prompts_text = {prompts_text} (len = {len(prompts_text)})
+            prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
+            prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
+            completion_ids = {completion_ids} (shape = {completion_ids.shape})
+            completion_mask = {completion_mask} (shape = {completion_mask.shape})
+            completions = {completions} (len = {len(completions)})
+            completions_text = {completions_text} (len = {len(completions_text)})
+            completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
+            is_eos = {is_eos} (shape = {is_eos.shape})
+            rewards = {rewards} (shape = {rewards.shape})
+            rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
+        """) if self.DEBUG else None
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
