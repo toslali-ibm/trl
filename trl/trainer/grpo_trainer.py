@@ -1146,9 +1146,9 @@ class GRPOTrainer(Trainer):
         if self.ENABLE_EXPLORATION:
             inputs, explored = self.add_exploration(inputs)
             self.current_exploration = explored  # optional: track for logging or debugging
+            print("Exploring", self.current_exploration) if self.DEBUG else None
 
         print("Inputs after exploration", inputs) if self.DEBUG else None
-        print("Exploring", self.current_exploration) if self.DEBUG else None
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
