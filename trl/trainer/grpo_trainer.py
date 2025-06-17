@@ -777,16 +777,16 @@ class GRPOTrainer(Trainer):
         completion_ids, completion_mask, completions, completions_text,
         completion_lengths, is_eos, rewards, rewards_per_func
     ):
-        print(locals())
+        # if not enabled or not exploring this round, return the input batch
         if not self.ENABLE_EXPLORATION or not self.PROMISING_BUFFER:
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
 
-        assert len(self.PROMISING_BUFFER) == 1
+        assert len(self.PROMISING_BUFFER) == 1 # should always be exploring just one item
         
         chosen_idx = next(iter(self.PROMISING_BUFFER))
-        n = self.EXPLORATION_BUDGET
+        n = self.EXPLORATION_BUDGET # ToDo: this can be different (num_gen vs. epxloration_budget)
         regular_slice = slice(0, -n)
         exploration_slice = slice(-n, None)
 
@@ -806,12 +806,14 @@ class GRPOTrainer(Trainer):
             "rewards_per_func": rewards_per_func[exploration_slice],
         }
 
+        # if there is history of promising buffer item, merge them with the new observations (explore budget = 2, and num_gen = 4, so we need to explore in 2 steps)
         for key, val in inputs_to_store.items():
             if key in buffer:
                 buffer[key] = torch.cat([buffer[key], val], dim=0) if isinstance(val, torch.Tensor) else buffer[key] + val
             else:
                 buffer[key] = val
 
+        # Move from promising to reuse buffer, or discard!
         if "rewards" in buffer:
             rewards_len = len(buffer["rewards"])
             all_zero = buffer["rewards"].sum().item() == 0
@@ -823,8 +825,8 @@ class GRPOTrainer(Trainer):
                 # Move good sample to REUSE_BUFFER when num_generations reached
                 self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
 
-        
-        if len(self.REUSE_BUFFER) > 0: # if there are good samples, let's go ahead and check if we can replace any
+        # if there are good samples, let's go ahead and check if we can replace any
+        if len(self.REUSE_BUFFER) > 0:
             rewards_regular = rewards[regular_slice]
             i = 0 # Iterate in chunks of num_gen
             while i < len(rewards_regular):
@@ -837,6 +839,7 @@ class GRPOTrainer(Trainer):
                         field = locals()[field_name]
                         replacement = reuse_data[field_name]
                         assert len(replacement) == self.num_generations, f"Mismatch in length for {field_name}"
+                        print("-----REPLACING LOGIC ACTIVATED! ")
                         if isinstance(field, list):
                             field[i:i+self.num_generations] = replacement
                         elif torch.is_tensor(field):
@@ -848,6 +851,9 @@ class GRPOTrainer(Trainer):
                     break
                 
                 i += self.num_generations
+
+        print("**promising buffer ", self.PROMISING_BUFFER) if self.DEBUG else None
+        print("**REUSE buffer:", self.REUSE_BUFFER) if self.DEBUG else None
 
         return tuple(x[regular_slice] for x in [
             prompts, prompts_text, prompt_ids, prompt_mask,
@@ -1135,14 +1141,14 @@ class GRPOTrainer(Trainer):
         mode = "train" if self.model.training else "eval"
 
         # torch.distributed.breakpoint()
-        print("Inputs before exploration", inputs)
+        print("Inputs before exploration", inputs) if self.DEBUG else None
         # SMART SAMPLING: Optionally add exploratory prompts
         if self.ENABLE_EXPLORATION:
             inputs, explored = self.add_exploration(inputs)
             self.current_exploration = explored  # optional: track for logging or debugging
 
-        print("Inputs after exploration", inputs)
-        print("Exploring", self.current_exploration)
+        print("Inputs after exploration", inputs) if self.DEBUG else None
+        print("Exploring", self.current_exploration) if self.DEBUG else None
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
@@ -1249,7 +1255,7 @@ class GRPOTrainer(Trainer):
             completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
 
-            print("completion_ids and prompt_completion_ids", completion_ids, prompt_completion_ids)
+            print("completion_ids and prompt_completion_ids", completion_ids, prompt_completion_ids) if self.DEBUG else None
 
         else:
             # Regular generation path
@@ -1368,61 +1374,41 @@ class GRPOTrainer(Trainer):
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Hook2: now that we have the rewards, we can adjust the batch accordingly!
-        print("Before pruning:")
-        print("  prompts =", prompts)
-        print("  prompts_text =", prompts_text)
-        print("  prompt_ids =", prompt_ids)
-        print("  prompt_mask =", prompt_mask)
-        print("  completion_ids =", completion_ids)
-        print("  completion_mask =", completion_mask)
-        print("  completions =", completions)
-        print("  completions_text =", completions_text)
-        print("  completion_lengths =", completion_lengths)
-        print("  is_eos =", is_eos)
-        print("  rewards =", rewards)
-        print("  rewards_per_func =", rewards_per_func)
+        print(f"""Before pruning:
+        prompts = {prompts}
+        prompts_text = {prompts_text}
+        prompt_ids = {prompt_ids}
+        prompt_mask = {prompt_mask}
+        completion_ids = {completion_ids}
+        completion_mask = {completion_mask}
+        completions = {completions}
+        completions_text = {completions_text}
+        completion_lengths = {completion_lengths}
+        is_eos = {is_eos}
+        rewards = {rewards}
+        rewards_per_func = {rewards_per_func}""") if self.DEBUG else None
         
         # Prune extra exploration generations BEFORE slicing
-        (
-            prompts,
-            prompts_text,
-            prompt_ids,
-            prompt_mask,
-            completion_ids,
-            completion_mask,
-            completions,
-            completions_text,
-            completion_lengths,
-            is_eos,
-            rewards,
-            rewards_per_func
-        ) = self.adjust_batch(
-            prompts=prompts,
-            prompts_text=prompts_text,
-            prompt_ids=prompt_ids,
-            prompt_mask=prompt_mask,
-            completion_ids=completion_ids,
-            completion_mask=completion_mask,
-            completions=completions,
-            completions_text=completions_text,
-            completion_lengths=completion_lengths,
-            is_eos=is_eos,
-            rewards=rewards,
-            rewards_per_func=rewards_per_func,
-        )
-        print("After pruning:")
-        print("  prompts =", prompts)
-        print("  prompts_text =", prompts_text)
-        print("  prompt_ids =", prompt_ids)
-        print("  prompt_mask =", prompt_mask)
-        print("  completion_ids =", completion_ids)
-        print("  completion_mask =", completion_mask)
-        print("  completions =", completions)
-        print("  completions_text =", completions_text)
-        print("  completion_lengths =", completion_lengths)
-        print("  is_eos =", is_eos)
-        print("  rewards =", rewards)
-        print("  rewards_per_func =", rewards_per_func)
+        (prompts, prompts_text, prompt_ids, prompt_mask,
+        completion_ids, completion_mask, completions, completions_text,
+        completion_lengths, is_eos, rewards, rewards_per_func) = self.adjust_batch(
+            prompts, prompts_text, prompt_ids, prompt_mask,
+            completion_ids, completion_mask, completions, completions_text,
+            completion_lengths, is_eos, rewards, rewards_per_func)
+
+        print(f"""After pruning:
+        prompts = {prompts}
+        prompts_text = {prompts_text}
+        prompt_ids = {prompt_ids}
+        prompt_mask = {prompt_mask}
+        completion_ids = {completion_ids}
+        completion_mask = {completion_mask}
+        completions = {completions}
+        completions_text = {completions_text}
+        completion_lengths = {completion_lengths}
+        is_eos = {is_eos}
+        rewards = {rewards}
+        rewards_per_func = {rewards_per_func}""") if self.DEBUG else None
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
