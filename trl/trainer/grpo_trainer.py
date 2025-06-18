@@ -1261,7 +1261,7 @@ class GRPOTrainer(Trainer):
 
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id, fixed_length=self.max_completion_length)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
 
             print("completion_ids and prompt_completion_ids", completion_ids, prompt_completion_ids) if self.DEBUG else None
