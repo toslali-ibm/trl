@@ -729,140 +729,6 @@ class GRPOTrainer(Trainer):
                         reward_func, evaluation_mode=True, device_placement=True
                     )
 
-    def add_exploration(self, batch: list[dict]):
-        """
-        Optionally add an exploration index to the current batch.
-
-        - If exploration is enabled and PROMISING_BUFFER is empty, choose a new candidate index to explore.
-        - If already exploring, add the current is promising use it again.
-        - Remove used indices from AVAILABLE_INDICES to avoid repeats.
-        """
-        if not self.ENABLE_EXPLORATION:
-            return batch, []
-        
-        # Extract IDs from current batch
-        batch_ids = {sample["__idx__"] for sample in batch} 
-
-        # Always remove current batch indices from AVAILABLE_INDICES
-        self.AVAILABLE_INDICES -= batch_ids
-
-        print("         Adding exploration, promising: ", self.PROMISING_BUFFER) if self.DEBUG else None
-
-        # Case 1: No active exploration — start one
-        if not self.PROMISING_BUFFER:
-            explore_candidates = list(self.AVAILABLE_INDICES)
-            if not explore_candidates:
-                return batch, []
-
-            chosen_idx = random.choice(explore_candidates)
-            self.PROMISING_BUFFER[chosen_idx] = {}
-            self.AVAILABLE_INDICES.discard(chosen_idx)
-
-            print("         Added new exploration, promising:", self.PROMISING_BUFFER) if self.DEBUG else None
-
-            chosen_sample = self.train_dataset[chosen_idx]
-            return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
-        # Case 2: Already exploring — repeat current one
-        assert len(self.PROMISING_BUFFER) == 1
-        chosen_idx = next(iter(self.PROMISING_BUFFER))
-        self.AVAILABLE_INDICES.discard(chosen_idx)
-
-        print("         Continuing exploration, promising:", self.PROMISING_BUFFER) if self.DEBUG else None
-
-        chosen_sample = self.train_dataset[chosen_idx]
-        return batch + [chosen_sample] * self.EXPLORATION_BUDGET, [chosen_idx]
-    
-    def adjust_batch(
-        self, prompts, prompts_text, prompt_ids, prompt_mask,
-        completion_ids, completion_mask, completions, completions_text,
-        completion_lengths, is_eos, rewards, rewards_per_func
-    ):
-        # if not enabled or not exploring this round, return the input batch
-        if not self.ENABLE_EXPLORATION or not self.PROMISING_BUFFER:
-            return (prompts, prompts_text, prompt_ids, prompt_mask,
-                    completion_ids, completion_mask, completions, completions_text,
-                    completion_lengths, is_eos, rewards, rewards_per_func)
-
-        assert len(self.PROMISING_BUFFER) == 1 # should always be exploring just one item
-        
-        chosen_idx = next(iter(self.PROMISING_BUFFER))
-        n = self.EXPLORATION_BUDGET # ToDo: this can be different (num_gen vs. epxloration_budget)
-        regular_slice = slice(0, -n)
-        exploration_slice = slice(-n, None)
-
-        buffer = self.PROMISING_BUFFER.setdefault(chosen_idx, {})
-        inputs_to_store = {
-            "prompts": prompts[exploration_slice],
-            "prompts_text": prompts_text[exploration_slice],
-            "prompt_ids": prompt_ids[exploration_slice],
-            "prompt_mask": prompt_mask[exploration_slice],
-            "completion_ids": completion_ids[exploration_slice],
-            "completion_mask": completion_mask[exploration_slice],
-            "completions": completions[exploration_slice],
-            "completions_text": completions_text[exploration_slice],
-            "completion_lengths": completion_lengths[exploration_slice],
-            "is_eos": is_eos[exploration_slice],
-            "rewards": rewards[exploration_slice],
-            "rewards_per_func": rewards_per_func[exploration_slice],
-        }
-
-        # if there is history of promising buffer item, merge them with the new observations (explore budget = 2, and num_gen = 4, so we need to explore in 2 steps)
-        for key, val in inputs_to_store.items():
-            if key in buffer:
-                buffer[key] = torch.cat([buffer[key], val], dim=0) if isinstance(val, torch.Tensor) else buffer[key] + val
-            else:
-                buffer[key] = val
-
-        # Move from promising to reuse buffer, or discard!
-        if "rewards" in buffer:
-            rewards_len = len(buffer["rewards"])
-            all_zero = buffer["rewards"].sum().item() == 0
-
-            if all_zero and rewards_len >= self.EXPLORATION_BUDGET:
-                # Discard failed exploratory sample when EXPLORATION_BUDGET reached
-                self.PROMISING_BUFFER.pop(chosen_idx)
-            elif not all_zero and rewards_len >= self.num_generations:
-                # Move good sample to REUSE_BUFFER when num_generations reached
-                self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
-            else: 
-                raise NotImplementedError
-
-        # if there are good samples, let's go ahead and check if we can replace any
-        if len(self.REUSE_BUFFER) > 0:
-            rewards_regular = rewards[regular_slice]
-            i = 0 # Iterate in chunks of num_gen
-            while i < len(rewards_regular):
-                reward_chunk = rewards_regular[i:i + self.num_generations]
-                
-                if torch.all(reward_chunk == 0) and len(self.REUSE_BUFFER) > 0:
-                    idx, reuse_data = self.REUSE_BUFFER.popleft()
-            
-                    for field_name in reuse_data:
-                        field = locals()[field_name]
-                        replacement = reuse_data[field_name]
-                        assert len(replacement) == self.num_generations, f"Mismatch in length for {field_name}"
-                        print("-----REPLACING LOGIC ACTIVATED for ", field_name)
-                        if isinstance(field, list):
-                            field[i:i+self.num_generations] = replacement
-                        elif torch.is_tensor(field):
-                            field[i:i+self.num_generations] = replacement
-                        else:
-                            raise TypeError(f"Unhandled type for field {field_name}")
-
-                if len(self.REUSE_BUFFER) == 0:
-                    break
-                
-                i += self.num_generations
-
-        print("**promising buffer ", self.PROMISING_BUFFER) if self.DEBUG else None
-        print("**REUSE buffer:", self.REUSE_BUFFER) if self.DEBUG else None
-
-        return tuple(x[regular_slice] for x in [
-            prompts, prompts_text, prompt_ids, prompt_mask,
-            completion_ids, completion_mask, completions, completions_text,
-            completion_lengths, is_eos, rewards, rewards_per_func
-        ])
-
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
@@ -1136,37 +1002,188 @@ class GRPOTrainer(Trainer):
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
+    def add_exploration(self, inputs: list[dict]) -> list[dict]:
+        """
+        Multi-process compatible exploration logic.
+
+        - Gathers inputs from all ranks.
+        - Adds exploration on the main process.
+        - Broadcasts updated list back to all ranks.
+        - Slices per-rank input from the full updated list.
+        """
+        accelerator = self.accelerator
+
+        if not self.ENABLE_EXPLORATION:
+            self.current_exploration = []
+            return inputs
+
+        # Gather full input batch from all processes (required on all ranks)
+        all_inputs = gather_object(inputs)
+
+        # Main process adds exploration sample
+        if accelerator.is_main_process:
+            batch_ids = {sample["__idx__"] for sample in all_inputs}
+            self.AVAILABLE_INDICES -= batch_ids
+
+            if not self.PROMISING_BUFFER:
+                explore_candidates = list(self.AVAILABLE_INDICES)
+                if explore_candidates:
+                    chosen_idx = random.choice(explore_candidates)
+                    self.PROMISING_BUFFER[chosen_idx] = {}
+                    self.AVAILABLE_INDICES.discard(chosen_idx)
+                    chosen_sample = self.train_dataset[chosen_idx]
+                    all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
+                    self.current_exploration = [chosen_idx]
+            else:
+                assert len(self.PROMISING_BUFFER) == 1
+                chosen_idx = next(iter(self.PROMISING_BUFFER))
+                self.AVAILABLE_INDICES.discard(chosen_idx)
+                chosen_sample = self.train_dataset[chosen_idx]
+                all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
+                self.current_exploration = [chosen_idx]
+
+        # Step 3: Broadcast updated input list to all ranks
+        all_inputs = broadcast_object_list(all_inputs, from_process=0)
+
+        # Step 4: Slice per-rank batch
+        total_len = len(all_inputs)
+        num_procs = accelerator.num_processes
+        rank = accelerator.process_index
+        k, m = divmod(total_len, num_procs)
+        start = rank * k + min(rank, m)
+        end = start + k + (1 if rank < m else 0)
+
+        return all_inputs[start:end]
+
+    def adjust_batch(
+        self, prompts, prompts_text, prompt_ids, prompt_mask,
+        completion_ids, completion_mask, completions, completions_text,
+        completion_lengths, is_eos, rewards, rewards_per_func
+    ):
+        """
+        Multi-process aware batch adjustment with exploration pruning and reuse logic.
+        Gathers all data to rank 0, applies the replacement strategy, and slices back.
+        """
+
+        # === Early return if no exploration ===
+        if not self.ENABLE_EXPLORATION or not self.PROMISING_BUFFER:
+            return (prompts, prompts_text, prompt_ids, prompt_mask,
+                    completion_ids, completion_mask, completions, completions_text,
+                    completion_lengths, is_eos, rewards, rewards_per_func)
+
+        if self.accelerator.is_main_process:
+            # === Gather all processes' to main ===
+            all_data = {
+                "prompts": self.accelerator.gather(prompts),
+                "prompts_text": gather_object(prompts_text),
+                "prompt_ids": self.accelerator.gather(prompt_ids),
+                "prompt_mask": self.accelerator.gather(prompt_mask),
+                "completion_ids": self.accelerator.gather(completion_ids),
+                "completion_mask": self.accelerator.gather(completion_mask),
+                "completions": gather_object(completions),
+                "completions_text": gather_object(completions_text),
+                "completion_lengths": self.accelerator.gather(completion_lengths),
+                "is_eos": self.accelerator.gather(is_eos),
+                "rewards": self.accelerator.gather(rewards),
+                "rewards_per_func": self.accelerator.gather(rewards_per_func),
+            }
+
+            # === Process exploration data ===
+            assert len(self.PROMISING_BUFFER) == 1 # always exploring 1 item
+            chosen_idx = next(iter(self.PROMISING_BUFFER))
+            n = self.EXPLORATION_BUDGET # budget is equal to num_gen for now
+            regular_slice = slice(0, -n)
+            exploration_slice = slice(-n, None)
+            buffer = self.PROMISING_BUFFER.setdefault(chosen_idx, {}) # promising buffer
+
+            # Update promising buffer with new observations (from exploration_slice)
+            for k, v in all_data.items():
+                explored = v[exploration_slice]
+                if k in buffer: # this should not be hapenning when budget == num_gen
+                    buffer[k] = torch.cat([buffer[k], explored], dim=0) if isinstance(explored, torch.Tensor) else buffer[k] + explored
+                    raise NotImplemented
+                else:  # always first time
+                    buffer[k] = explored
+                    
+            # Decide about explored item
+            reward_sum = buffer["rewards"].sum().item()
+            reward_len = buffer["rewards"].shape[0]
+            if reward_sum == 0 and reward_len >= n: 
+                # Discard failed exploratory sample when EXPLORATION_BUDGET reached
+                self.PROMISING_BUFFER.pop(chosen_idx)
+            elif reward_sum > 0 and reward_len >= self.num_generations:
+                # Move good sample to REUSE_BUFFER when num_generations reached
+                self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
+            else:
+                raise NotImplemented
+
+            # === Replace chunks with REUSE_BUFFER if needed ===
+            if len(self.REUSE_BUFFER) > 0:
+                full_len = all_data["rewards"].shape[0] - n # only getting non exploration part of batch
+                assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
+                for i in range(0, full_len, self.num_generations): # over the full batch in chunks of num_generations
+                    chunk_rewards = all_data["rewards"][i:i+self.num_generations]
+                    if torch.all(chunk_rewards == 0) and self.REUSE_BUFFER:  # this prompt is uninformative
+                        idx, reuse = self.REUSE_BUFFER.popleft() # lets get informative from FIFO
+                        for k in all_data:
+                            replacement = reuse[k]
+                            if isinstance(all_data[k], torch.Tensor):
+                                assert replacement.shape[0] == self.num_generations, f"Mismatch in replacement size for {k}"
+                            else:
+                                assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            all_data[k][i:i+self.num_generations] = replacement
+
+            # === Prune exploration from the end ===
+            for key in all_data:
+                val = all_data[key]
+                all_data[key] = val[regular_slice] if isinstance(val, (torch.Tensor, list)) else val
+            # Pack for broadcasting
+            adjusted = tuple(all_data[k] for k in [
+                "prompts", "prompts_text", "prompt_ids", "prompt_mask",
+                "completion_ids", "completion_mask", "completions", "completions_text",
+                "completion_lengths", "is_eos", "rewards", "rewards_per_func"
+            ])
+
+        else:
+            adjusted = None
+
+        # === Broadcast adjusted results to all ranks ===
+        adjusted = broadcast_object_list(adjusted, from_process=0)
+
+        # === Slice batch for this rank ===
+        rank = self.accelerator.process_index
+        batch_size_per_rank = self.args.per_device_train_batch_size
+        start = rank * batch_size_per_rank
+        end = start + batch_size_per_rank
+
+        final = []
+        for val in adjusted:
+            if isinstance(val, (list, torch.Tensor)):
+                final.append(val[start:end])
+            else:
+                raise NotImplementedError(f"Unsupported type during slicing: {type(val)}")
+
+        return tuple(final)
+
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
-        # torch.distributed.breakpoint()
         print("Inputs before exploration", inputs) if self.DEBUG else None
-        # SMART SAMPLING: Optionally add exploratory prompts
-        if self.ENABLE_EXPLORATION:
-            inputs, explored = self.add_exploration(inputs)
-            self.current_exploration = explored  # optional: track for logging or debugging
-            print("Exploring", self.current_exploration) if self.DEBUG else None
-
-        print("Inputs after exploration", inputs) if self.DEBUG else None
+        inputs = self.add_exploration(inputs)
+        print("Local Inputs after exploration", inputs) if self.DEBUG else None
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         # Not the max in the current batch, but the max prompt length to fix smart sampling issue
         prompt_inputs = self.processing_class(
-            text=prompts_text,
-            return_tensors="pt",
-            truncation=True,  # shoould not be larger than max_prompt_length
-            padding="max_length",  # explicitly pad to max_length
-            max_length=self.max_prompt_length,
-            padding_side="left",
-            add_special_tokens=False
+            text=prompts_text, return_tensors="pt", truncation=True, padding="max_length",
+            max_length=self.max_prompt_length, padding_side="left", add_special_tokens=False
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-        # torch.distributed.breakpoint()
 
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
@@ -1183,9 +1200,8 @@ class GRPOTrainer(Trainer):
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
-                # torch.distributed.breakpoint()
-                print("All prompts text", all_prompts_text)
                 all_prompts_text = gather_object(prompts_text)
+                print("All prompts text", all_prompts_text)
                 if self.accelerator.is_main_process:
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
@@ -1209,14 +1225,13 @@ class GRPOTrainer(Trainer):
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
                 print("completion_ids", completion_ids)
-                completion_ids = broadcast_object_list(completion_ids, from_process=0)
-                print("completion_ids after broadcast", completion_ids)
-                process_slice = slice(
-                    self.accelerator.process_index * len(prompts),
-                    (self.accelerator.process_index + 1) * len(prompts),
-                )
-                completion_ids = completion_ids[process_slice]
+                local_prompt_count = len(prompts_text)
+                all_prompt_counts = gather_object([local_prompt_count])
+                start = sum(all_prompt_counts[:self.accelerator.process_index])
+                end = start + local_prompt_count
+                completion_ids = completion_ids[start:end]
 
+                assert len(completion_ids) == local_prompt_count, "Mismatch between completions and prompts"
                 print("completion_ids sliced", completion_ids)
 
             # Generate completions using colocated vLLM instances: each device holds vLLM copy and work on their own batch of prompts
@@ -1405,7 +1420,7 @@ class GRPOTrainer(Trainer):
             prompts, prompts_text, prompt_ids, prompt_mask,
             completion_ids, completion_mask, completions, completions_text,
             completion_lengths, is_eos, rewards, rewards_per_func)
-
+                
         print(f"""After pruning:
             prompts = {prompts} (len = {len(prompts)})
             prompts_text = {prompts_text} (len = {len(prompts_text)})
