@@ -1171,9 +1171,9 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
-        print("Inputs before exploration", inputs) if self.DEBUG else None
+        print(f"[Rank {self.accelerator.process_index}] Inputs before exploration: {inputs}") if self.DEBUG else None
         inputs = self.add_exploration(inputs)
-        print("Local Inputs after exploration", inputs) if self.DEBUG else None
+        print(f"[Rank {self.accelerator.process_index}] Inputs after exploration: {inputs}")  if self.DEBUG else None
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
@@ -1200,12 +1200,12 @@ class GRPOTrainer(Trainer):
             if self.vllm_mode == "server":
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
-                    print("All prompts text", all_prompts_text) if self.DEBUG else None
+                    print(f"[Rank {self.accelerator.process_index}] all_prompts_text: {all_prompts_text}") if self.DEBUG else None
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                     # prompt individually.
                     ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
-                    print("ordered_set_of_prompts", ordered_set_of_prompts) if self.DEBUG else None
+                    print(f"[Rank {self.accelerator.process_index}] ordered_set_of_prompts: {ordered_set_of_prompts}") if self.DEBUG else None
                     with profiling_context(self, "vLLM.generate"):
                         completion_ids = self.vllm_client.generate(
                             prompts=ordered_set_of_prompts,
@@ -1223,7 +1223,7 @@ class GRPOTrainer(Trainer):
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
-                print("completion_ids", completion_ids) if self.DEBUG else None
+                print(f"[Rank {self.accelerator.process_index}] completion_ids before: {completion_ids}")  if self.DEBUG else None
                 local_prompt_count = len(prompts_text)
                 all_prompt_counts = gather_object([local_prompt_count])
                 start = sum(all_prompt_counts[:self.accelerator.process_index])
@@ -1231,7 +1231,7 @@ class GRPOTrainer(Trainer):
                 completion_ids = completion_ids[start:end]
 
                 assert len(completion_ids) == local_prompt_count, "Mismatch between completions and prompts"
-                print("completion_ids sliced", completion_ids)
+                print(f"[Rank {self.accelerator.process_index}] completion_ids sliced: {completion_ids}")  if self.DEBUG else None
 
             # Generate completions using colocated vLLM instances: each device holds vLLM copy and work on their own batch of prompts
             elif self.vllm_mode == "colocate":
@@ -1278,7 +1278,7 @@ class GRPOTrainer(Trainer):
             completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id, fixed_length=self.max_completion_length)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
 
-            print("completion_ids and prompt_completion_ids", completion_ids, prompt_completion_ids) if self.DEBUG else None
+            print(f"[Rank {self.accelerator.process_index}] completion_ids and prompt_completion_ids: {completion_ids} and {prompt_completion_ids}")  if self.DEBUG else None
 
         else:
             # Regular generation path
@@ -1397,7 +1397,7 @@ class GRPOTrainer(Trainer):
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Hook2: now that we have the rewards, we can adjust the batch accordingly!
-        print(f"""Before pruning:
+        print(f"""[Rank {self.accelerator.process_index}] Before pruning:
             prompts = {prompts} (len = {len(prompts)})
             prompts_text = {prompts_text} (len = {len(prompts_text)})
             prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
@@ -1420,7 +1420,7 @@ class GRPOTrainer(Trainer):
             completion_ids, completion_mask, completions, completions_text,
             completion_lengths, is_eos, rewards, rewards_per_func)
                 
-        print(f"""After pruning:
+        print(f"""[Rank {self.accelerator.process_index}] After pruning:
             prompts = {prompts} (len = {len(prompts)})
             prompts_text = {prompts_text} (len = {len(prompts_text)})
             prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
@@ -1453,10 +1453,9 @@ class GRPOTrainer(Trainer):
             (self.accelerator.process_index + 1) * len(prompts),
         )
         all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
-        print("all_process_advantages", all_process_advantages)
+        print(f"[Rank {self.accelerator.process_index}] all_process_advantages {all_process_advantages}") if self.DEBUG else None
         advantages = advantages[process_slice]
-
-        print("process advantages", advantages)
+        print(f"[Rank {self.accelerator.process_index}] advantages {advantages}") if self.DEBUG else None
 
         # Log the metrics
         if mode == "train":
