@@ -1102,6 +1102,11 @@ class GRPOTrainer(Trainer):
                 "rewards_per_func": gather(rewards_per_func),
             }
 
+            print(" | ".join(
+                f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
+                for k, v in all_data.items()
+            )) if self.DEBUG else None
+
             # === Process exploration data ===
             assert len(self.PROMISING_BUFFER) == 1 # always exploring 1 item
             chosen_idx = next(iter(self.PROMISING_BUFFER))
@@ -1118,15 +1123,20 @@ class GRPOTrainer(Trainer):
                     raise NotImplemented
                 else:  # always first time
                     buffer[k] = explored
+                    print(f"Rank {self.accelerator.process_index} Updated key: {k}") if self.DEBUG else None
                     
             # Decide about explored item
             reward_sum = buffer["rewards"].sum().item()
             reward_len = buffer["rewards"].shape[0]
+
+            print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
             if reward_sum == 0 and reward_len >= n: 
                 # Discard failed exploratory sample when EXPLORATION_BUDGET reached
+                print("Discard failed exploratory sample when EXPLORATION_BUDGET reached") if self.DEBUG else None
                 self.PROMISING_BUFFER.pop(chosen_idx)
             elif reward_sum > 0 and reward_len >= self.num_generations:
                 # Move good sample to REUSE_BUFFER when num_generations reached
+                print("Move good sample to REUSE_BUFFER when num_generations reached") if self.DEBUG else None
                 self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
             else:
                 raise NotImplemented
@@ -1134,11 +1144,14 @@ class GRPOTrainer(Trainer):
             # === Replace chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
                 full_len = all_data["rewards"].shape[0] - n # only getting non exploration part of batch
+                print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
                 for i in range(0, full_len, self.num_generations): # over the full batch in chunks of num_generations
                     chunk_rewards = all_data["rewards"][i:i+self.num_generations]
+                    print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
                     if torch.all(chunk_rewards == 0) and self.REUSE_BUFFER:  # this prompt is uninformative
                         idx, reuse = self.REUSE_BUFFER.popleft() # lets get informative from FIFO
+                        print(f"Found one and replacing {i} to {i+self.num_generations}") if self.DEBUG else None
                         for k in all_data:
                             replacement = reuse[k]
                             if isinstance(all_data[k], torch.Tensor):
@@ -1157,15 +1170,18 @@ class GRPOTrainer(Trainer):
                 "completion_ids", "completion_mask", "completions", "completions_text",
                 "completion_lengths", "is_eos", "rewards", "rewards_per_func"
             ])
+            print(f"Adjusted in main proc {adjusted}") if self.DEBUG else None
+
 
         else:
             adjusted = None
 
         # === Broadcast adjusted results to all ranks ===
         adjusted = broadcast_object_list(adjusted, from_process=0)
-
+        
         # === Slice batch for this rank ===
         rank = self.accelerator.process_index
+        print(f"[Rank {rank}] Final adjusted total {adjusted}") if self.DEBUG else None
         batch_size_per_rank = self.args.per_device_train_batch_size
         start = rank * batch_size_per_rank
         end = start + batch_size_per_rank
@@ -1176,7 +1192,8 @@ class GRPOTrainer(Trainer):
                 final.append(val[start:end])
             else:
                 raise NotImplementedError(f"Unsupported type during slicing: {type(val)}")
-
+        
+        print(f"[Rank {rank}] Final adjusted final {final}") if self.DEBUG else None
         return tuple(final)
 
     def _generate_and_score_completions(
