@@ -1185,6 +1185,7 @@ class GRPOTrainer(Trainer):
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
+        print("----check max prompt length")
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
@@ -1192,14 +1193,17 @@ class GRPOTrainer(Trainer):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:
             # First, update the vLLM weights if needed
+            print("----Update model")
             if self.state.global_step != self._last_loaded_step:
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
+                print("----Inference time!")
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
+                    print("----Main process will do vllm communication!")
                     print(f"[Rank {self.accelerator.process_index}] all_prompts_text: {all_prompts_text}") if self.DEBUG else None
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
@@ -1222,6 +1226,7 @@ class GRPOTrainer(Trainer):
                     completion_ids = [None] * len(all_prompts_text)
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
+                print("----Time to broadcest completions!")
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
                 print(f"[Rank {self.accelerator.process_index}] completion_ids before: {completion_ids}")  if self.DEBUG else None
                 local_prompt_count = len(prompts_text)
