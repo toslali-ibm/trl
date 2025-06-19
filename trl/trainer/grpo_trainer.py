@@ -1023,17 +1023,22 @@ class GRPOTrainer(Trainer):
         # Main process adds exploration sample
         if accelerator.is_main_process:
             batch_ids = {sample["__idx__"] for sample in all_inputs}
+            print(f"---Main checking batch_ids: {batch_ids}") if self.DEBUG else None
             self.AVAILABLE_INDICES -= batch_ids
 
             if not self.PROMISING_BUFFER:
                 explore_candidates = list(self.AVAILABLE_INDICES)
                 if explore_candidates:
                     chosen_idx = random.choice(explore_candidates)
+                    
                     self.PROMISING_BUFFER[chosen_idx] = {}
                     self.AVAILABLE_INDICES.discard(chosen_idx)
                     chosen_sample = self.train_dataset[chosen_idx]
+                    print(f"----Choosing idx: {chosen_idx} and data :{chosen_sample}") if self.DEBUG else None
                     all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
                     self.current_exploration = [chosen_idx]
+                else:
+                    print("---Warning no explore candidates!") if self.DEBUG else None
             else:
                 assert len(self.PROMISING_BUFFER) == 1
                 chosen_idx = next(iter(self.PROMISING_BUFFER))
@@ -1041,10 +1046,11 @@ class GRPOTrainer(Trainer):
                 chosen_sample = self.train_dataset[chosen_idx]
                 all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
                 self.current_exploration = [chosen_idx]
+                raise NotImplementedError # this would never happen now!
 
         # Step 3: Broadcast updated input list to all ranks
         all_inputs = broadcast_object_list(all_inputs, from_process=0)
-
+        
         # Step 4: Slice per-rank batch
         total_len = len(all_inputs)
         num_procs = accelerator.num_processes
@@ -1052,9 +1058,11 @@ class GRPOTrainer(Trainer):
         k, m = divmod(total_len, num_procs)
         start = rank * k + min(rank, m)
         end = start + k + (1 if rank < m else 0)
-
-        return all_inputs[start:end]
-
+        print(f"[Rank {rank}] - all inputs {all_inputs}")
+        inputs = all_inputs[start:end]
+        print(f"[Rank {rank}] Final sliced inputs (len={len(inputs)}): {[i['__idx__'] for i in inputs]}  - num_procs={num_procs}, start={start}, end={end}") if self.DEBUG else None
+        return inputs
+    
     def adjust_batch(
         self, prompts, prompts_text, prompt_ids, prompt_mask,
         completion_ids, completion_mask, completions, completions_text,
