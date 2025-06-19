@@ -1047,6 +1047,9 @@ class GRPOTrainer(Trainer):
                 all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
                 self.current_exploration = [chosen_idx]
                 raise NotImplementedError # this would never happen now!
+        
+        else: # non-main processses had total - num_gen length - so mistaken
+            all_inputs = None
 
         # Step 3: Broadcast updated input list to all ranks
         all_inputs = broadcast_object_list(all_inputs, from_process=0)
