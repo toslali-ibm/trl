@@ -1119,7 +1119,8 @@ class GRPOTrainer(Trainer):
                 "is_eos": gather(is_eos),
                 "rewards": gather(rewards),
                 "rewards_per_func": gather(rewards_per_func),
-            }
+            } 
+            print("--------Gathereed all hey!")
 
             print(" | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
