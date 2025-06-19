@@ -1204,7 +1204,9 @@ class GRPOTrainer(Trainer):
 
         sliced = {}
         for k, v in adjusted.items():
-            if isinstance(v, (list, torch.Tensor)):
+            if k in ["rewards", "rewards_per_func"]:
+                sliced[k] = v  # do not slice
+            elif isinstance(v, (list, torch.Tensor)):
                 sliced[k] = v[start:end]
             else:
                 raise NotImplementedError(f"Unsupported type for slicing: {type(v)} for key '{k}'")
