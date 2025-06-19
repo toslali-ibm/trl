@@ -1103,24 +1103,26 @@ class GRPOTrainer(Trainer):
                     completion_lengths, is_eos, rewards, rewards_per_func)
         
 
+        # === Gather all processes' data (must be done on all ranks!) ===
+        print(f"[Rank {self.accelerator.process_index}] Gathering data") if self.DEBUG else None
+
+        all_data = {
+            "prompts": gather_object(prompts),
+            "prompts_text": gather_object(prompts_text),
+            "prompt_ids": gather(prompt_ids),
+            "prompt_mask": gather(prompt_mask),
+            "completion_ids": gather(completion_ids),
+            "completion_mask": gather(completion_mask),
+            "completions": gather_object(completions),
+            "completions_text": gather_object(completions_text),
+            "completion_lengths": gather(completion_lengths),
+            "is_eos": gather(is_eos),
+            "rewards": gather(rewards),
+            "rewards_per_func": gather(rewards_per_func),
+        }
         if self.accelerator.is_main_process:
             # === Gather all processes' to main ===
-            print("# === Gather all processes' to main ===") if self.DEBUG else None
-            all_data = {
-                "prompts": gather_object(prompts),
-                "prompts_text": gather_object(prompts_text),
-                "prompt_ids": gather(prompt_ids),
-                "prompt_mask": gather(prompt_mask),
-                "completion_ids": gather(completion_ids),
-                "completion_mask": gather(completion_mask),
-                "completions": gather_object(completions),
-                "completions_text": gather_object(completions_text),
-                "completion_lengths": gather(completion_lengths),
-                "is_eos": gather(is_eos),
-                "rewards": gather(rewards),
-                "rewards_per_func": gather(rewards_per_func),
-            } 
-            print("--------Gathereed all hey!")
+            print("# === Gathereed all and now main ===") if self.DEBUG else None
 
             print(" | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
