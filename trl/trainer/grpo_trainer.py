@@ -1049,10 +1049,13 @@ class GRPOTrainer(Trainer):
                 raise NotImplementedError # this would never happen now!
         
         else: # non-main processses had total - num_gen length - so mistaken
-            all_inputs = None
+            total_len = len(all_inputs) + self.EXPLORATION_BUDGET # we expect exploration items
+            all_inputs = [None] * total_len
 
         # Step 3: Broadcast updated input list to all ranks
         all_inputs = broadcast_object_list(all_inputs, from_process=0)
+        # prune if there are no explorations this round
+        all_inputs = [x for x in all_inputs if x is not None] 
         
         # Step 4: Slice per-rank batch
         total_len = len(all_inputs)
