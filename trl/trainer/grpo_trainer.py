@@ -1088,18 +1088,18 @@ class GRPOTrainer(Trainer):
         if self.accelerator.is_main_process:
             # === Gather all processes' to main ===
             all_data = {
-                "prompts": self.accelerator.gather(prompts),
+                "prompts": gather_object(prompts),
                 "prompts_text": gather_object(prompts_text),
-                "prompt_ids": self.accelerator.gather(prompt_ids),
-                "prompt_mask": self.accelerator.gather(prompt_mask),
-                "completion_ids": self.accelerator.gather(completion_ids),
-                "completion_mask": self.accelerator.gather(completion_mask),
+                "prompt_ids": gather(prompt_ids),
+                "prompt_mask": gather(prompt_mask),
+                "completion_ids": gather(completion_ids),
+                "completion_mask": gather(completion_mask),
                 "completions": gather_object(completions),
                 "completions_text": gather_object(completions_text),
-                "completion_lengths": self.accelerator.gather(completion_lengths),
-                "is_eos": self.accelerator.gather(is_eos),
-                "rewards": self.accelerator.gather(rewards),
-                "rewards_per_func": self.accelerator.gather(rewards_per_func),
+                "completion_lengths": gather(completion_lengths),
+                "is_eos": gather(is_eos),
+                "rewards": gather(rewards),
+                "rewards_per_func": gather(rewards_per_func),
             }
 
             # === Process exploration data ===
