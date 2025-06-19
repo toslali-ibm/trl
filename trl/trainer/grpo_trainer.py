@@ -1117,8 +1117,8 @@ class GRPOTrainer(Trainer):
             "completions_text": gather_object(completions_text),
             "completion_lengths": gather(completion_lengths),
             "is_eos": gather(is_eos),
-            "rewards": gather(rewards),
-            "rewards_per_func": gather(rewards_per_func),
+            "rewards": rewards,
+            "rewards_per_func": rewards_per_func,
         }
         if self.accelerator.is_main_process:
             # === Gather all processes' to main ===
@@ -1556,6 +1556,10 @@ class GRPOTrainer(Trainer):
         for i, name in enumerate(self.reward_func_names):
             self._textual_logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
         self._textual_logs["advantages"].extend(all_process_advantages.tolist())
+
+    
+        print(f"###[Rank {self.accelerator.process_index}] --- Now returning to Training Shapes -> prompt_ids: {prompt_ids.shape}, prompt_mask: {prompt_mask.shape}, completion_ids: {completion_ids.shape}, completion_mask: {completion_mask.shape}, advantages: {advantages.shape}")
+
 
         return {
             "prompt_ids": prompt_ids,
