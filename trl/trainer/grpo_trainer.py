@@ -1088,12 +1088,13 @@ class GRPOTrainer(Trainer):
         
         # === exploration is enabled, check if PROMISING_BUFFER is non-empty on rank 0 ===
         if self.accelerator.is_main_process:
-            run_adjustment = bool(self.PROMISING_BUFFER)
+            run_adjustment = [bool(self.PROMISING_BUFFER)]
         else:
-            run_adjustment = None
+            run_adjustment = [None]
 
         # Broadcast the boolean flag to all ranks
-        run_adjustment = self.accelerator.broadcast(run_adjustment, src=0)
+        run_adjustment = broadcast_object_list(run_adjustment, from_process=0)[0]
+        print(f"[Rank {self.accelerator.process_index}] Run adjustment {run_adjustment}") if self.DEBUG else None
 
         if not run_adjustment:
             print("EXPLORATION IS enabled but nothing to explore") if self.DEBUG else None
