@@ -1021,15 +1021,6 @@ class GRPOTrainer(Trainer):
         # Gather full input batch from all processes (required on all ranks)
         all_inputs = gather_object(inputs)
 
-        print(f"[Rank {self.accelerator.process_index}] available indices {self.AVAILABLE_INDICES}")
-        print(f"[Rank {self.accelerator.process_index}] all_inputs")
-        batch_ids = {sample["__idx__"] for sample in all_inputs}
-        for id in batch_ids:
-            data = self.train_dataset[id]
-            print(f"[Rank {self.accelerator.process_index}] batch_id = {id} and input {data}")
-
-        print(0/0)
-
         # Main process adds exploration sample
         if accelerator.is_main_process:
             batch_ids = {sample["__idx__"] for sample in all_inputs}
