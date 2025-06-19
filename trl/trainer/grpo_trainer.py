@@ -1202,16 +1202,20 @@ class GRPOTrainer(Trainer):
         start = rank * batch_size_per_rank
         end = start + batch_size_per_rank
 
+        device = self.accelerator.device  # per-rank correct device
         sliced = {}
         for k, v in adjusted.items():
-            if k in ["rewards", "rewards_per_func"]:
-                sliced[k] = v  # do not slice
-            elif isinstance(v, (list, torch.Tensor)):
+            if isinstance(v, torch.Tensor):
+                if k in ["rewards", "rewards_per_func"]:
+                    sliced[k] = v.to(device)  # move to correct device (no need to slice as they are global rewards)
+                else:
+                    sliced[k] = v[start:end].to(device)  # slice and move to crrect device
+            elif isinstance(v, list):
                 sliced[k] = v[start:end]
             else:
                 raise NotImplementedError(f"Unsupported type for slicing: {type(v)} for key '{k}'")
 
-        
+
         print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
         BATCH_KEYS = [
             "prompts", "prompts_text", "prompt_ids", "prompt_mask",
@@ -1522,6 +1526,8 @@ class GRPOTrainer(Trainer):
             self.state.num_input_tokens_seen += self.accelerator.gather(attention_mask.sum()).sum().item()
         self._metrics[mode]["num_tokens"] = [self.state.num_input_tokens_seen]
 
+        print(f"[Rank {self.accelerator.process_index}] num_input_tokens_seen") if self.DEBUG else None
+
         # Log completion lengths, mean, min, max
         agg_completion_lengths = self.accelerator.gather(completion_lengths)
         self._metrics[mode]["completions/mean_length"].append(agg_completion_lengths.float().mean().item())
@@ -1539,6 +1545,8 @@ class GRPOTrainer(Trainer):
         self._metrics[mode]["completions/min_terminated_length"].append(term_completion_lengths.float().min().item())
         self._metrics[mode]["completions/max_terminated_length"].append(term_completion_lengths.float().max().item())
 
+        print(f"[Rank {self.accelerator.process_index}] term_completion_lengths") if self.DEBUG else None
+
         # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
         for i, reward_func_name in enumerate(self.reward_func_names):
             mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
@@ -1551,6 +1559,7 @@ class GRPOTrainer(Trainer):
 
         self._metrics[mode]["advantages"].append(advantages.mean().item())
 
+        print(f"[Rank {self.accelerator.process_index}] Calculate mean reward per function") if self.DEBUG else None
 
         # Log prompt and completion texts
         self._textual_logs["prompt"].extend(gather_object(prompts_text))
