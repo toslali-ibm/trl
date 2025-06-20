@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import random
 import textwrap
 import warnings
 from collections import defaultdict, deque
@@ -21,6 +22,7 @@ from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+from collections import deque
 
 import datasets
 import torch
@@ -393,6 +395,14 @@ class GRPOTrainer(Trainer):
         optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
         peft_config: Optional["PeftConfig"] = None,
     ):
+        
+        self.REUSE_BUFFER = deque() # FIFO for confirmed promising indices
+        self.PROMISING_BUFFER = {} # Currently being explored for a second round, includes idx = [23,23] for example
+        self.ENABLE_EXPLORATION = args.smart_sampling
+        self.EXPLORATION_BUDGET = args.num_generations # for now, num generations exploration because of vllm optimization (unique prompt)- todo however many copies you want 
+        self.EXPLORATION_THRESHOLD = args.num_generations # observations before discarding
+        self.DEBUG = True
+
         # Args
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
@@ -541,6 +551,9 @@ class GRPOTrainer(Trainer):
         # This acts as a flag to indicate that the warning has already been issued.
         model.warnings_issued["estimate_tokens"] = True
 
+        ## SMART SAMPLER NEEDS IDs
+        train_dataset = train_dataset.add_column("__idx__", list(range(len(train_dataset))))
+
         super().__init__(
             model=model,
             args=args,
@@ -551,6 +564,8 @@ class GRPOTrainer(Trainer):
             callbacks=callbacks,
             optimizers=optimizers,
         )
+
+        self.AVAILABLE_INDICES = set(range(len(train_dataset))) # all remaining datapoint indices to explore
 
         # Reference model
         self.beta = args.beta
@@ -988,20 +1003,249 @@ class GRPOTrainer(Trainer):
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
+    def add_exploration(self, inputs: list[dict]) -> list[dict]:
+        """
+        Multi-process compatible exploration logic.
+
+        - Gathers inputs from all ranks.
+        - Adds exploration on the main process.
+        - Broadcasts updated list back to all ranks.
+        - Slices per-rank input from the full updated list.
+        """
+        accelerator = self.accelerator
+
+        if not self.ENABLE_EXPLORATION:
+            self.current_exploration = []
+            return inputs
+
+        # Gather full input batch from all processes (required on all ranks)
+        all_inputs = gather_object(inputs)
+
+        # Main process adds exploration sample
+        if accelerator.is_main_process:
+            batch_ids = {sample["__idx__"] for sample in all_inputs}
+            print(f"---Main checking batch_ids: {batch_ids}") if self.DEBUG else None
+            self.AVAILABLE_INDICES -= batch_ids
+
+            if not self.PROMISING_BUFFER:
+                explore_candidates = list(self.AVAILABLE_INDICES)
+                if explore_candidates:
+                    chosen_idx = random.choice(explore_candidates)
+                    
+                    self.PROMISING_BUFFER[chosen_idx] = {}
+                    self.AVAILABLE_INDICES.discard(chosen_idx)
+                    chosen_sample = self.train_dataset[chosen_idx]
+                    print(f"----Choosing idx: {chosen_idx} and data :{chosen_sample}") if self.DEBUG else None
+                    all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
+                    self.current_exploration = [chosen_idx]
+                else:
+                    print("---Warning no explore candidates!") if self.DEBUG else None
+            else:
+                assert len(self.PROMISING_BUFFER) == 1
+                chosen_idx = next(iter(self.PROMISING_BUFFER))
+                self.AVAILABLE_INDICES.discard(chosen_idx)
+                chosen_sample = self.train_dataset[chosen_idx]
+                all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
+                self.current_exploration = [chosen_idx]
+                raise NotImplementedError # this would never happen now!
+        
+        else: # non-main processses had total - num_gen length - so mistaken
+            total_len = len(all_inputs) + self.EXPLORATION_BUDGET # we expect exploration items
+            all_inputs = [None] * total_len
+
+        # Step 3: Broadcast updated input list to all ranks
+        all_inputs = broadcast_object_list(all_inputs, from_process=0)
+        # prune if there are no explorations this round
+        all_inputs = [x for x in all_inputs if x is not None] 
+        
+        # Step 4: Slice per-rank batch
+        total_len = len(all_inputs)
+        num_procs = accelerator.num_processes
+        rank = accelerator.process_index
+        k, m = divmod(total_len, num_procs)
+        start = rank * k + min(rank, m)
+        end = start + k + (1 if rank < m else 0)
+        print(f"[Rank {rank}] - all inputs {all_inputs}")
+        inputs = all_inputs[start:end]
+        print(f"[Rank {rank}] Final sliced inputs (len={len(inputs)}): {[i['__idx__'] for i in inputs]}  - num_procs={num_procs}, start={start}, end={end}") if self.DEBUG else None
+        return inputs
+    
+    def adjust_batch(
+        self, prompts, prompts_text, prompt_ids, prompt_mask,
+        completion_ids, completion_mask, completions, completions_text,
+        completion_lengths, is_eos, rewards, rewards_per_func
+    ):
+        """
+        Multi-process aware batch adjustment with exploration pruning and reuse logic.
+        Gathers all data to rank 0, applies the replacement strategy, and slices back.
+        """
+
+        # === Early return if exploration disabled ===
+        if not self.ENABLE_EXPLORATION:
+            print("EXPLORATION IS DISABLED") if self.DEBUG else None
+            return (prompts, prompts_text, prompt_ids, prompt_mask,
+                    completion_ids, completion_mask, completions, completions_text,
+                    completion_lengths, is_eos, rewards, rewards_per_func)
+        
+        # === exploration is enabled, check if PROMISING_BUFFER is non-empty on rank 0 ===
+        if self.accelerator.is_main_process:
+            run_adjustment = [bool(self.PROMISING_BUFFER)]
+        else:
+            run_adjustment = [None]
+
+        # Broadcast the boolean flag to all ranks
+        run_adjustment = broadcast_object_list(run_adjustment, from_process=0)[0]
+        print(f"[Rank {self.accelerator.process_index}] Run adjustment {run_adjustment}") if self.DEBUG else None
+
+        if not run_adjustment:
+            print("EXPLORATION IS enabled but nothing to explore") if self.DEBUG else None
+            return (prompts, prompts_text, prompt_ids, prompt_mask,
+                    completion_ids, completion_mask, completions, completions_text,
+                    completion_lengths, is_eos, rewards, rewards_per_func)
+        
+
+        # === Gather all processes' data (must be done on all ranks!) ===
+        print(f"[Rank {self.accelerator.process_index}] Gathering data") if self.DEBUG else None
+
+        all_data = {
+            "prompts": gather_object(prompts),
+            "prompts_text": gather_object(prompts_text),
+            "prompt_ids": gather(prompt_ids),
+            "prompt_mask": gather(prompt_mask),
+            "completion_ids": gather(completion_ids),
+            "completion_mask": gather(completion_mask),
+            "completions": gather_object(completions),
+            "completions_text": gather_object(completions_text),
+            "completion_lengths": gather(completion_lengths),
+            "is_eos": gather(is_eos),
+            "rewards": rewards,
+            "rewards_per_func": rewards_per_func,
+        }
+        if self.accelerator.is_main_process:
+            # === Gather all processes' to main ===
+            print("# === Gathereed all and now main ===") if self.DEBUG else None
+
+            print(" | ".join(
+                f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
+                for k, v in all_data.items()
+            )) if self.DEBUG else None
+
+            # === Process exploration data ===
+            assert len(self.PROMISING_BUFFER) == 1 # always exploring 1 item
+            chosen_idx = next(iter(self.PROMISING_BUFFER))
+            n = self.EXPLORATION_BUDGET # budget is equal to num_gen for now
+            regular_slice = slice(0, -n)
+            exploration_slice = slice(-n, None)
+            buffer = self.PROMISING_BUFFER.setdefault(chosen_idx, {}) # promising buffer
+
+            # Update promising buffer with new observations (from exploration_slice)
+            for k, v in all_data.items():
+                explored = v[exploration_slice]
+                if k in buffer: # this should not be hapenning when budget == num_gen
+                    buffer[k] = torch.cat([buffer[k], explored], dim=0) if isinstance(explored, torch.Tensor) else buffer[k] + explored
+                    raise NotImplemented
+                else:  # always first time
+                    buffer[k] = explored
+                    print(f"Rank {self.accelerator.process_index} Updated key: {k}") if self.DEBUG else None
+                    
+            # Decide about explored item
+            reward_sum = buffer["rewards"].sum().item()
+            reward_len = buffer["rewards"].shape[0]
+
+            print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
+            if reward_sum == 0 and reward_len >= n: 
+                # Discard failed exploratory sample when EXPLORATION_BUDGET reached
+                print("Discard failed exploratory sample when EXPLORATION_BUDGET reached") if self.DEBUG else None
+                self.PROMISING_BUFFER.pop(chosen_idx)
+            elif reward_sum > 0 and reward_len >= self.num_generations:
+                # Move good sample to REUSE_BUFFER when num_generations reached
+                print("Move good sample to REUSE_BUFFER when num_generations reached") if self.DEBUG else None
+                self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
+            else:
+                raise NotImplemented
+
+            # === Replace chunks with REUSE_BUFFER if needed ===
+            if len(self.REUSE_BUFFER) > 0:
+                full_len = all_data["rewards"].shape[0] - n # only getting non exploration part of batch
+                print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
+                assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
+                for i in range(0, full_len, self.num_generations): # over the full batch in chunks of num_generations
+                    chunk_rewards = all_data["rewards"][i:i+self.num_generations]
+                    print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
+                    if torch.all(chunk_rewards == 0) and self.REUSE_BUFFER:  # this prompt is uninformative
+                        idx, reuse = self.REUSE_BUFFER.popleft() # lets get informative from FIFO
+                        print(f"Found one and replacing {i} to {i+self.num_generations}") if self.DEBUG else None
+                        for k in all_data:
+                            replacement = reuse[k]
+                            if isinstance(all_data[k], torch.Tensor):
+                                assert replacement.shape[0] == self.num_generations, f"Mismatch in replacement size for {k}"
+                            else:
+                                assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            all_data[k][i:i+self.num_generations] = replacement
+
+            # === Prune exploration from the end ===
+            for key in all_data:
+                val = all_data[key]
+                all_data[key] = val[regular_slice] if isinstance(val, (torch.Tensor, list)) else val
+            # Pack for broadcasting
+            adjusted = [all_data]
+            print(f"Adjusted in main proc {adjusted}") if self.DEBUG else None
+        else:
+            adjusted = [None]
+
+        # === Broadcast adjusted results to all ranks ===
+        adjusted = broadcast_object_list(adjusted, from_process=0)[0]
+        
+        # === Slice batch for this rank ===
+        rank = self.accelerator.process_index
+        print(f"[Rank {rank}] Final adjusted total {adjusted}") if self.DEBUG else None
+        batch_size_per_rank = self.args.per_device_train_batch_size
+        start = rank * batch_size_per_rank
+        end = start + batch_size_per_rank
+
+        device = self.accelerator.device  # per-rank correct device
+        sliced = {}
+        for k, v in adjusted.items():
+            if isinstance(v, torch.Tensor):
+                if k in ["rewards", "rewards_per_func"]:
+                    sliced[k] = v.to(device)  # move to correct device (no need to slice as they are global rewards)
+                else:
+                    sliced[k] = v[start:end].to(device)  # slice and move to crrect device
+            elif isinstance(v, list):
+                sliced[k] = v[start:end]
+            else:
+                raise NotImplementedError(f"Unsupported type for slicing: {type(v)} for key '{k}'")
+
+
+        print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
+        BATCH_KEYS = [
+            "prompts", "prompts_text", "prompt_ids", "prompt_mask",
+            "completion_ids", "completion_mask", "completions", "completions_text",
+            "completion_lengths", "is_eos", "rewards", "rewards_per_func"
+        ]
+        return tuple(sliced[k] for k in BATCH_KEYS)
+
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
 
+        print(f"[Rank {self.accelerator.process_index}] Inputs before exploration: {inputs}") if self.DEBUG else None
+        inputs = self.add_exploration(inputs)
+        print(f"[Rank {self.accelerator.process_index}] Inputs after exploration: {inputs}")  if self.DEBUG else None
+
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
+        # Not the max in the current batch, but the max prompt length to fix smart sampling issue
         prompt_inputs = self.processing_class(
-            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+            text=prompts_text, return_tensors="pt", truncation=True, padding="max_length",
+            max_length=self.max_prompt_length, padding_side="left", add_special_tokens=False
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
+        print("----check max prompt length")
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
@@ -1009,18 +1253,23 @@ class GRPOTrainer(Trainer):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:
             # First, update the vLLM weights if needed
+            print("----Update model")
             if self.state.global_step != self._last_loaded_step:
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
+                print("----Inference time!")
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
+                    print("----Main process will do vllm communication!")
+                    print(f"[Rank {self.accelerator.process_index}] all_prompts_text: {all_prompts_text}") if self.DEBUG else None
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                     # prompt individually.
                     ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+                    print(f"[Rank {self.accelerator.process_index}] ordered_set_of_prompts: {ordered_set_of_prompts}") if self.DEBUG else None
                     with profiling_context(self, "vLLM.generate"):
                         completion_ids = self.vllm_client.generate(
                             prompts=ordered_set_of_prompts,
@@ -1037,12 +1286,17 @@ class GRPOTrainer(Trainer):
                     completion_ids = [None] * len(all_prompts_text)
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
+                print("----Time to broadcest completions!")
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
-                process_slice = slice(
-                    self.accelerator.process_index * len(prompts),
-                    (self.accelerator.process_index + 1) * len(prompts),
-                )
-                completion_ids = completion_ids[process_slice]
+                print(f"[Rank {self.accelerator.process_index}] completion_ids before: {completion_ids}")  if self.DEBUG else None
+                local_prompt_count = len(prompts_text)
+                all_prompt_counts = gather_object([local_prompt_count])
+                start = sum(all_prompt_counts[:self.accelerator.process_index])
+                end = start + local_prompt_count
+                completion_ids = completion_ids[start:end]
+
+                assert len(completion_ids) == local_prompt_count, "Mismatch between completions and prompts"
+                print(f"[Rank {self.accelerator.process_index}] completion_ids sliced: {completion_ids}")  if self.DEBUG else None
 
             # Generate completions using colocated vLLM instances: each device holds vLLM copy and work on their own batch of prompts
             elif self.vllm_mode == "colocate":
@@ -1072,6 +1326,7 @@ class GRPOTrainer(Trainer):
                     all_prompts_text = prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
+                    print("All prompts text", all_prompts_text)
                     all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
 
                 completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
@@ -1085,8 +1340,11 @@ class GRPOTrainer(Trainer):
 
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id)
+            completion_ids = pad(completion_ids, padding_value=self.processing_class.pad_token_id, fixed_length=self.max_completion_length)
             prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+
+            print(f"[Rank {self.accelerator.process_index}] completion_ids and prompt_completion_ids: {completion_ids} and {prompt_completion_ids}")  if self.DEBUG else None
+
         else:
             # Regular generation path
             with unwrap_model_for_generation(
@@ -1203,6 +1461,45 @@ class GRPOTrainer(Trainer):
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
+        # Hook2: now that we have the rewards, we can adjust the batch accordingly!
+        print(f"""[Rank {self.accelerator.process_index}] Before pruning:
+            prompts = {prompts} (len = {len(prompts)})
+            prompts_text = {prompts_text} (len = {len(prompts_text)})
+            prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
+            prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
+            completion_ids = {completion_ids} (shape = {completion_ids.shape})
+            completion_mask = {completion_mask} (shape = {completion_mask.shape})
+            completions = {completions} (len = {len(completions)})
+            completions_text = {completions_text} (len = {len(completions_text)})
+            completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
+            is_eos = {is_eos} (shape = {is_eos.shape})
+            rewards = {rewards} (shape = {rewards.shape})
+            rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
+        """) if self.DEBUG else None
+        
+        # Prune extra exploration generations BEFORE slicing
+        (prompts, prompts_text, prompt_ids, prompt_mask,
+        completion_ids, completion_mask, completions, completions_text,
+        completion_lengths, is_eos, rewards, rewards_per_func) = self.adjust_batch(
+            prompts, prompts_text, prompt_ids, prompt_mask,
+            completion_ids, completion_mask, completions, completions_text,
+            completion_lengths, is_eos, rewards, rewards_per_func)
+                
+        print(f"""[Rank {self.accelerator.process_index}] After pruning:
+            prompts = {prompts} (len = {len(prompts)})
+            prompts_text = {prompts_text} (len = {len(prompts_text)})
+            prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
+            prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
+            completion_ids = {completion_ids} (shape = {completion_ids.shape})
+            completion_mask = {completion_mask} (shape = {completion_mask.shape})
+            completions = {completions} (len = {len(completions)})
+            completions_text = {completions_text} (len = {len(completions_text)})
+            completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
+            is_eos = {is_eos} (shape = {is_eos.shape})
+            rewards = {rewards} (shape = {rewards.shape})
+            rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
+        """) if self.DEBUG else None
+
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
         std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
@@ -1221,12 +1518,16 @@ class GRPOTrainer(Trainer):
             (self.accelerator.process_index + 1) * len(prompts),
         )
         all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
+        print(f"[Rank {self.accelerator.process_index}] all_process_advantages {all_process_advantages}") if self.DEBUG else None
         advantages = advantages[process_slice]
+        print(f"[Rank {self.accelerator.process_index}] advantages {advantages}") if self.DEBUG else None
 
         # Log the metrics
         if mode == "train":
             self.state.num_input_tokens_seen += self.accelerator.gather(attention_mask.sum()).sum().item()
         self._metrics[mode]["num_tokens"] = [self.state.num_input_tokens_seen]
+
+        print(f"[Rank {self.accelerator.process_index}] num_input_tokens_seen") if self.DEBUG else None
 
         # Log completion lengths, mean, min, max
         agg_completion_lengths = self.accelerator.gather(completion_lengths)
@@ -1245,6 +1546,8 @@ class GRPOTrainer(Trainer):
         self._metrics[mode]["completions/min_terminated_length"].append(term_completion_lengths.float().min().item())
         self._metrics[mode]["completions/max_terminated_length"].append(term_completion_lengths.float().max().item())
 
+        print(f"[Rank {self.accelerator.process_index}] term_completion_lengths") if self.DEBUG else None
+
         # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
         for i, reward_func_name in enumerate(self.reward_func_names):
             mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
@@ -1255,12 +1558,20 @@ class GRPOTrainer(Trainer):
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
+        self._metrics[mode]["advantages"].append(advantages.mean().item())
+
+        print(f"[Rank {self.accelerator.process_index}] Calculate mean reward per function") if self.DEBUG else None
+
         # Log prompt and completion texts
         self._textual_logs["prompt"].extend(gather_object(prompts_text))
         self._textual_logs["completion"].extend(gather_object(completions_text))
         for i, name in enumerate(self.reward_func_names):
             self._textual_logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
         self._textual_logs["advantages"].extend(all_process_advantages.tolist())
+
+    
+        print(f"###[Rank {self.accelerator.process_index}] --- Now returning to Training Shapes -> prompt_ids: {prompt_ids.shape}, prompt_mask: {prompt_mask.shape}, completion_ids: {completion_ids.shape}, completion_mask: {completion_mask.shape}, advantages: {advantages.shape}")
+
 
         return {
             "prompt_ids": prompt_ids,
@@ -1499,7 +1810,7 @@ class GRPOTrainer(Trainer):
         if hasattr(self.model.config, "unsloth_version"):
             tags.add("unsloth")
 
-        tags.update(self._tag_names)
+        # tags.update(self._tag_names)
 
         citation = textwrap.dedent(
             """\
