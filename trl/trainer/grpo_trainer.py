@@ -402,6 +402,7 @@ class GRPOTrainer(Trainer):
         self.EXPLORATION_BUDGET = args.num_generations # for now, num generations exploration because of vllm optimization (unique prompt)- todo however many copies you want 
         self.EXPLORATION_THRESHOLD = args.num_generations # observations before discarding
         self.DEBUG = True
+        random.seed(args.seed)
 
         # Args
         if args is None:
