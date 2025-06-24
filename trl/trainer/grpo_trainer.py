@@ -1286,7 +1286,7 @@ class GRPOTrainer(Trainer):
                     completion_ids = [None] * len(all_prompts_text)
                 # Broadcast the completions from the main process to all processes, ensuring each process receives its
                 # corresponding slice.
-                print("----Time to broadcest completions!")
+                print("----Time to broadcest completions!") if self.DEBUG else None
                 completion_ids = broadcast_object_list(completion_ids, from_process=0)
                 print(f"[Rank {self.accelerator.process_index}] completion_ids before: {completion_ids}")  if self.DEBUG else None
                 local_prompt_count = len(prompts_text)
@@ -1335,8 +1335,17 @@ class GRPOTrainer(Trainer):
                     # Slice completions for this rank within its TP group.
                     # Each rank generates all outputs — we keep only our share.
                     local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
-                    tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
-                    completion_ids = completion_ids[tp_slice]
+                    all_counts = [None for _ in range(self.vllm_tensor_parallel_size)] # Rank 0: [0, 0, 0, 1, 1] → 5; Rank 1: [1, 87, 87, 87] → 4
+                    
+                    print("----Time to broadcast orig_sizes!") if self.DEBUG else None
+                    torch.distributed.all_gather_object(all_counts, orig_size, group=self.tp_group)  # all_counts → [5, 4]
+                    assert sum(all_counts) == len(completion_ids), "Mismatch between gathered prompt sizes and number of completions"
+
+                    offsets = [sum(all_counts[:i]) for i in range(len(all_counts))]  # offsets → [0, 5]
+                    start = offsets[local_rank_in_group]  # Rank 0 → 0; Rank 1 → 5
+                    end = start + orig_size      # Rank 0 → 5; Rank 1 → 9
+                    completion_ids = completion_ids[start:end]  # Rank 0 gets [0', 0', 0', 1', 1']; Rank 1 gets [1', 87', 87', 87']
+                    print(f"[Rank {self.accelerator.process_index}] completion_ids after: {completion_ids}")  if self.DEBUG else None
 
             # Pad the completions, and concatenate them with the prompts
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
