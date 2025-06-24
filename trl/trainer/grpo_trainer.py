@@ -1425,13 +1425,18 @@ class GRPOTrainer(Trainer):
                 completions = completions_text
 
 
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompt_ids shape: {prompt_ids.shape}")
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completion_ids shape: {completion_ids.shape}")
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- attention_mask shape: {attention_mask.shape}")
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completions_text: {completions_text}")
+
         
 
             rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
+
+
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompt_ids shape: {prompt_ids.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completion_ids shape: {completion_ids.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- attention_mask shape: {attention_mask.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completions_text: {len(completions_text)}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompts: {len(prompts)}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- rewards_per_func: {rewards_per_func.shape}")
 
             # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
@@ -1475,8 +1480,9 @@ class GRPOTrainer(Trainer):
 
             # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
             # completions may be distributed across processes
-            rewards_per_func = self.accelerator.gather_for_metrics(rewards_per_func)
+            rewards_per_func = gather(rewards_per_func)
             
+
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
