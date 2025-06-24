@@ -1401,7 +1401,7 @@ class GRPOTrainer(Trainer):
             attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
             logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-            batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+            batch_size = prompt_ids.shape[0] if mode == "train" else self.args.per_device_eval_batch_size
 
             with torch.no_grad():
                 # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
@@ -1475,8 +1475,8 @@ class GRPOTrainer(Trainer):
 
             # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
             # completions may be distributed across processes
-            rewards_per_func = gather(rewards_per_func)
-
+            rewards_per_func = self.accelerator.gather_for_metrics(rewards_per_func)
+            
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
