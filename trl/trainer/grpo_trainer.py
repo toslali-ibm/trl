@@ -1123,6 +1123,7 @@ class GRPOTrainer(Trainer):
             "rewards": rewards,
             "rewards_per_func": rewards_per_func,
         }
+        print(f"[Rank {self.accelerator.process_index}] gathered all data {all_data}") if self.DEBUG else None
         if self.accelerator.is_main_process:
             # === Gather all processes' to main ===
             print("# === Gathereed all and now main ===") if self.DEBUG else None
@@ -1480,9 +1481,17 @@ class GRPOTrainer(Trainer):
 
             # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
             # completions may be distributed across processes
-            rewards_per_func = gather(rewards_per_func)
-            
 
+            local_rewards = rewards_per_func.cpu()  # Move to CPU - necessary for all gather object
+            local_list = local_rewards.tolist()     # Convert to list for object gathering
+
+            gathered = [None for _ in range(torch.distributed.get_world_size())]
+            torch.distributed.all_gather_object(gathered, local_list)
+
+            # Convert back to tensors
+            rewards_per_func = [torch.tensor(r) for r in gathered]
+            rewards_per_func = torch.cat(rewards_per_func, dim=0).to(device)  # Final stacked tensor
+            
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
