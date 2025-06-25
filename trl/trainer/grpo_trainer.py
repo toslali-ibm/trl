@@ -1081,7 +1081,6 @@ class GRPOTrainer(Trainer):
         Gathers all data to rank 0, applies the replacement strategy, and slices back.
         """
 
-        # === Early return if exploration disabled ===
         if not self.ENABLE_EXPLORATION:
             print("EXPLORATION IS DISABLED") if self.DEBUG else None
             return (prompts, prompts_text, prompt_ids, prompt_mask,
