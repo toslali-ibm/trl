@@ -1107,15 +1107,20 @@ class GRPOTrainer(Trainer):
         # === Gather all processes' data (must be done on all ranks!) ===
         print(f"[Rank {self.accelerator.process_index}] Gathering data") if self.DEBUG else None
 
-        batch_keys = [
-            "prompts", "prompts_text", "prompt_ids", "prompt_mask", "completion_ids", "completion_mask", 
-            "completions", "completions_text", "completion_lengths", "is_eos"
-        ]
-
-        local_data = [
-            {key: locals()[key][i] for key in batch_keys}
-            for i in range(len(prompts))
-        ]
+        local_data = []
+        for i in range(len(prompts)):
+            local_data.append({
+                "prompts": prompts[i],
+                "prompts_text": prompts_text[i],
+                "prompt_ids": prompt_ids[i],
+                "prompt_mask": prompt_mask[i],
+                "completion_ids": completion_ids[i],
+                "completion_mask": completion_mask[i],
+                "completions": completions[i],
+                "completions_text": completions_text[i],
+                "completion_lengths": completion_lengths[i],
+                "is_eos": is_eos[i]
+            })
         gathered_data = gather_object(local_data)
         device = self.accelerator.device  # per-rank correct device
 
