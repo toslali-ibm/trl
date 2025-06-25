@@ -1087,7 +1087,7 @@ class GRPOTrainer(Trainer):
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
-        
+
         # === exploration is enabled, check if PROMISING_BUFFER is non-empty on rank 0 ===
         print(f"[Rank {self.accelerator.process_index}] Checking run adjustment") if self.DEBUG else None
         if self.accelerator.is_main_process:
@@ -1095,7 +1095,6 @@ class GRPOTrainer(Trainer):
         else:
             run_adjustment = [None]
 
-        # Broadcast the boolean flag to all ranks
         run_adjustment = broadcast_object_list(run_adjustment, from_process=0)[0]
         print(f"[Rank {self.accelerator.process_index}] Run adjustment {run_adjustment}") if self.DEBUG else None
 
@@ -1104,29 +1103,39 @@ class GRPOTrainer(Trainer):
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
-        
 
         # === Gather all processes' data (must be done on all ranks!) ===
         print(f"[Rank {self.accelerator.process_index}] Gathering data") if self.DEBUG else None
 
-        all_data = {
-            "prompts": gather_object(prompts),
-            "prompts_text": gather_object(prompts_text),
-            "prompt_ids": gather(prompt_ids),
-            "prompt_mask": gather(prompt_mask),
-            "completion_ids": gather(completion_ids),
-            "completion_mask": gather(completion_mask),
-            "completions": gather_object(completions),
-            "completions_text": gather_object(completions_text),
-            "completion_lengths": gather(completion_lengths),
-            "is_eos": gather(is_eos),
-            "rewards": rewards,
-            "rewards_per_func": rewards_per_func,
-        }
-        print(f"[Rank {self.accelerator.process_index}] gathered all data {all_data}") if self.DEBUG else None
+        local_data = []
+        for i in range(len(prompts)):
+            local_data.append({
+                "prompts": prompts[i],
+                "prompts_text": prompts_text[i],
+                "prompt_ids": prompt_ids[i],
+                "prompt_mask": prompt_mask[i],
+                "completion_ids": completion_ids[i],
+                "completion_mask": completion_mask[i],
+                "completions": completions[i],
+                "completions_text": completions_text[i],
+                "completion_lengths": completion_lengths[i],
+                "is_eos": is_eos[i],
+                "rewards": rewards[i],
+                "rewards_per_func": rewards_per_func[i],
+            })
+
+        gathered_data = gather_object(local_data)
+
+        # Convert List[Dict] → Dict[List or Tensor]
         if self.accelerator.is_main_process:
-            # === Gather all processes' to main ===
             print("# === Gathereed all and now main ===") if self.DEBUG else None
+            all_data = {}
+            for k in gathered_data[0]:
+                values = [d[k] for d in gathered_data]
+                try:
+                    all_data[k] = torch.stack(values)
+                except Exception:
+                    all_data[k] = values
 
             print(" | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
@@ -1150,7 +1159,7 @@ class GRPOTrainer(Trainer):
                 else:  # always first time
                     buffer[k] = explored
                     print(f"Rank {self.accelerator.process_index} Updated key: {k}") if self.DEBUG else None
-                    
+
             # Decide about explored item
             reward_sum = buffer["rewards"].sum().item()
             reward_len = buffer["rewards"].shape[0]
@@ -1172,16 +1181,16 @@ class GRPOTrainer(Trainer):
                 full_len = all_data["rewards"].shape[0] - n # only getting non exploration part of batch
                 print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
-                for i in range(0, full_len, self.num_generations): # over the full batch in chunks of num_generations
+                for i in range(0, full_len, self.num_generations): # over the full global batch in chunks of num_generations
                     chunk_rewards = all_data["rewards"][i:i+self.num_generations]
                     print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
                     if torch.all(chunk_rewards == 0) and self.REUSE_BUFFER:  # this prompt is uninformative
-                        idx, reuse = self.REUSE_BUFFER.popleft() # lets get informative from FIFO
+                        idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
                         print(f"Found one and replacing {i} to {i+self.num_generations}") if self.DEBUG else None
                         for k in all_data:
                             replacement = reuse[k]
                             if isinstance(all_data[k], torch.Tensor):
-                                assert replacement.shape[0] == self.num_generations, f"Mismatch in replacement size for {k}"
+                                assert replacement.shape[0] == self.num_generations, f"Mismatch tensor in replacement size for {k}"
                             else:
                                 assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
                             all_data[k][i:i+self.num_generations] = replacement
@@ -1190,6 +1199,7 @@ class GRPOTrainer(Trainer):
             for key in all_data:
                 val = all_data[key]
                 all_data[key] = val[regular_slice] if isinstance(val, (torch.Tensor, list)) else val
+
             # Pack for broadcasting
             adjusted = [all_data]
             print(f"Adjusted in main proc {adjusted}") if self.DEBUG else None
@@ -1198,7 +1208,7 @@ class GRPOTrainer(Trainer):
 
         # === Broadcast adjusted results to all ranks ===
         adjusted = broadcast_object_list(adjusted, from_process=0)[0]
-        
+
         # === Slice batch for this rank ===
         rank = self.accelerator.process_index
         print(f"[Rank {rank}] Final adjusted total {adjusted}") if self.DEBUG else None
@@ -1219,14 +1229,15 @@ class GRPOTrainer(Trainer):
             else:
                 raise NotImplementedError(f"Unsupported type for slicing: {type(v)} for key '{k}'")
 
-
         print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
+
         BATCH_KEYS = [
             "prompts", "prompts_text", "prompt_ids", "prompt_mask",
             "completion_ids", "completion_mask", "completions", "completions_text",
             "completion_lengths", "is_eos", "rewards", "rewards_per_func"
         ]
         return tuple(sliced[k] for k in BATCH_KEYS)
+
 
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
