@@ -1119,19 +1119,25 @@ class GRPOTrainer(Trainer):
                 "completions": completions[i],
                 "completions_text": completions_text[i],
                 "completion_lengths": completion_lengths[i],
-                "is_eos": is_eos[i],
-                "rewards": rewards[i],
-                "rewards_per_func": rewards_per_func[i],
+                "is_eos": is_eos[i]
             })
 
         gathered_data = gather_object(local_data)
 
         # Convert List[Dict] → Dict[List or Tensor]
         if self.accelerator.is_main_process:
-            print(f"# === Gathereed all and now main === {gathered_data}") if self.DEBUG else None
+            print(f"# === Gathereed all and now main ===") if self.DEBUG else None
             all_data = {}
             for k in gathered_data[0]:
-                all_data[k] = [d[k] for d in gathered_data]
+                items = [d[k] for d in gathered_data]
+                if isinstance(items[0], torch.Tensor):
+                    all_data[k] = torch.cat(items, dim=0)  # if all tensors, stack
+                else:
+                    all_data[k] = items  # keep as list
+
+            ## add rewards (no need for gathering these are same across ranks)
+            all_data["rewards"] = rewards
+            all_data["rewards_per_func"] = rewards_per_func
 
             print(" | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
@@ -1150,15 +1156,17 @@ class GRPOTrainer(Trainer):
             for k, v in all_data.items():
                 explored = v[exploration_slice]
                 if k in buffer: # this should not be hapenning when budget == num_gen
-                    buffer[k] = buffer[k] + explored
+                    # buffer[k] = buffer[k] + explored
                     raise NotImplemented
                 else:  # always first time
-                    buffer[k] = explored
-                    print(f"Rank {self.accelerator.process_index} Updated key: {k}") if self.DEBUG else None
+                    if isinstance(v, torch.Tensor):
+                        buffer[k] = explored.clone()
+                    else:
+                        buffer[k] = explored.copy()
 
             # Decide about explored item
-            reward_sum = sum(buffer["rewards"])
-            reward_len = len(buffer["rewards"])
+            reward_sum = buffer["rewards"].sum().item()
+            reward_len = buffer["rewards"].shape[0]
 
             print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
             if reward_sum == 0 and reward_len >= n: 
@@ -1180,14 +1188,18 @@ class GRPOTrainer(Trainer):
                 for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
                     chunk_rewards = all_data["rewards"][i:i + self.num_generations]
                     print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
-                    if all(r == 0 for r in chunk_rewards) and self.REUSE_BUFFER:  # this prompt is uninformative
+                    if torch.all(chunk_rewards == 0).item() and self.REUSE_BUFFER:  # this prompt is uninformative
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
                         print(f"Found one and replacing {i} to {i + self.num_generations}") if self.DEBUG else None
                         for k in all_data:
-                            replacement = reuse[k]
-                            assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            all_data[k][i:i + self.num_generations] = replacement
-
+                            if isinstance(all_data[k], torch.Tensor):
+                                replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
+                                all_data[k][i:i + self.num_generations] = replacement_tensor
+                                assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            else:
+                                all_data[k][i:i + self.num_generations] = reuse[k]
+                                assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            
             # === Prune exploration from the end ===
             for key in all_data:
                 val = all_data[key]
@@ -1212,11 +1224,12 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device  # per-rank correct device
         sliced = {}
         for k, v in adjusted.items():
-            if k in ["rewards", "rewards_per_func"]:
-                sliced[k] = torch.tensor(v, device=device)  # move to correct device (no need to slice as they are global rewards)
-            elif k in ["prompt_mask", "completion_mask", "completion_lengths", "is_eos"]:
-                sliced[k] = torch.tensor(v[start:end], device=device) # slice and move to crrect device
-            else:
+            if isinstance(v, torch.Tensor):
+                if k in ["rewards", "rewards_per_func"]:
+                    sliced[k] = v.to(device)  # move to correct device (no need to slice as they are global rewards)
+                else:
+                    sliced[k] = v[start:end].to(device)  # slice and move to crrect device
+            elif isinstance(v, list):
                 sliced[k] = v[start:end]
 
         print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
@@ -1227,7 +1240,6 @@ class GRPOTrainer(Trainer):
             "completion_lengths", "is_eos", "rewards", "rewards_per_func"
         ]
         return tuple(sliced[k] for k in BATCH_KEYS)
-
 
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
@@ -1622,7 +1634,6 @@ class GRPOTrainer(Trainer):
             traceback.print_exc()
             return None
         
-
     def compute_liger_loss(self, unwrapped_model, inputs):
         # Compute the per-token log probabilities for the model
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
