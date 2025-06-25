@@ -1130,14 +1130,11 @@ class GRPOTrainer(Trainer):
             print(f"# === Gathereed all and now main ===") if self.DEBUG else None
             all_data = {}
             for k in gathered_data[0]:
-                items = [d[k] for d in gathered_data]
+                items = [d[k].to(device) if isinstance(d[k], torch.Tensor) else d[k] for d in gathered_data]
                 if isinstance(items[0], torch.Tensor):
-                    items = [t.to(device) for t in items]
-                    # Convert scalars to 1D so cat() doesn’t fail
-                    items = [t.unsqueeze(0) if t.dim() == 0 else t for t in items]
-                    all_data[k] = torch.cat(items, dim=0)  # if all tensors, stack
+                    all_data[k] = torch.stack(items, dim=0)  # stack all (1,512) like tensors
                 else:
-                    all_data[k] = items  # keep as list
+                    all_data[k] = items
 
             ## add rewards (no need for gathering these are same across ranks)
             all_data["rewards"] = rewards
