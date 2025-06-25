@@ -1133,6 +1133,8 @@ class GRPOTrainer(Trainer):
                 items = [d[k] for d in gathered_data]
                 if isinstance(items[0], torch.Tensor):
                     items = [t.to(device) for t in items]
+                    # Convert scalars to 1D so cat() doesn’t fail
+                    items = [t.unsqueeze(0) if t.dim() == 0 else t for t in items]
                     all_data[k] = torch.cat(items, dim=0)  # if all tensors, stack
                 else:
                     all_data[k] = items  # keep as list
