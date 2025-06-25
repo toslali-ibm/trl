@@ -1128,14 +1128,10 @@ class GRPOTrainer(Trainer):
 
         # Convert List[Dict] → Dict[List or Tensor]
         if self.accelerator.is_main_process:
-            print("# === Gathereed all and now main ===") if self.DEBUG else None
+            print(f"# === Gathereed all and now main === {gathered_data}") if self.DEBUG else None
             all_data = {}
             for k in gathered_data[0]:
-                values = [d[k] for d in gathered_data]
-                try:
-                    all_data[k] = torch.stack(values)
-                except Exception:
-                    all_data[k] = values
+                all_data[k] = [d[k] for d in gathered_data]
 
             print(" | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
@@ -1154,15 +1150,15 @@ class GRPOTrainer(Trainer):
             for k, v in all_data.items():
                 explored = v[exploration_slice]
                 if k in buffer: # this should not be hapenning when budget == num_gen
-                    buffer[k] = torch.cat([buffer[k], explored], dim=0) if isinstance(explored, torch.Tensor) else buffer[k] + explored
+                    buffer[k] = buffer[k] + explored
                     raise NotImplemented
                 else:  # always first time
                     buffer[k] = explored
                     print(f"Rank {self.accelerator.process_index} Updated key: {k}") if self.DEBUG else None
 
             # Decide about explored item
-            reward_sum = buffer["rewards"].sum().item()
-            reward_len = buffer["rewards"].shape[0]
+            reward_sum = sum(buffer["rewards"])
+            reward_len = len(buffer["rewards"])
 
             print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
             if reward_sum == 0 and reward_len >= n: 
@@ -1178,27 +1174,24 @@ class GRPOTrainer(Trainer):
 
             # === Replace chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
-                full_len = all_data["rewards"].shape[0] - n # only getting non exploration part of batch
+                full_len = len(all_data["rewards"]) - n  # rewards is now a list
                 print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
-                for i in range(0, full_len, self.num_generations): # over the full global batch in chunks of num_generations
-                    chunk_rewards = all_data["rewards"][i:i+self.num_generations]
+                for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
+                    chunk_rewards = all_data["rewards"][i:i + self.num_generations]
                     print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
-                    if torch.all(chunk_rewards == 0) and self.REUSE_BUFFER:  # this prompt is uninformative
+                    if all(r == 0 for r in chunk_rewards) and self.REUSE_BUFFER:  # this prompt is uninformative
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
-                        print(f"Found one and replacing {i} to {i+self.num_generations}") if self.DEBUG else None
+                        print(f"Found one and replacing {i} to {i + self.num_generations}") if self.DEBUG else None
                         for k in all_data:
                             replacement = reuse[k]
-                            if isinstance(all_data[k], torch.Tensor):
-                                assert replacement.shape[0] == self.num_generations, f"Mismatch tensor in replacement size for {k}"
-                            else:
-                                assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            all_data[k][i:i+self.num_generations] = replacement
+                            assert len(replacement) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            all_data[k][i:i + self.num_generations] = replacement
 
             # === Prune exploration from the end ===
             for key in all_data:
                 val = all_data[key]
-                all_data[key] = val[regular_slice] if isinstance(val, (torch.Tensor, list)) else val
+                all_data[key] = val[regular_slice]
 
             # Pack for broadcasting
             adjusted = [all_data]
@@ -1219,15 +1212,12 @@ class GRPOTrainer(Trainer):
         device = self.accelerator.device  # per-rank correct device
         sliced = {}
         for k, v in adjusted.items():
-            if isinstance(v, torch.Tensor):
-                if k in ["rewards", "rewards_per_func"]:
-                    sliced[k] = v.to(device)  # move to correct device (no need to slice as they are global rewards)
-                else:
-                    sliced[k] = v[start:end].to(device)  # slice and move to crrect device
-            elif isinstance(v, list):
-                sliced[k] = v[start:end]
+            if k in ["rewards", "rewards_per_func"]:
+                sliced[k] = torch.tensor(v, device=device)  # move to correct device (no need to slice as they are global rewards)
+            elif k in ["prompt_mask", "completion_mask", "completion_lengths", "is_eos"]:
+                sliced[k] = torch.tensor(v[start:end], device=device) # slice and move to crrect device
             else:
-                raise NotImplementedError(f"Unsupported type for slicing: {type(v)} for key '{k}'")
+                sliced[k] = v[start:end]
 
         print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
 
