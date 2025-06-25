@@ -1123,6 +1123,7 @@ class GRPOTrainer(Trainer):
             })
 
         gathered_data = gather_object(local_data)
+        device = self.accelerator.device  # per-rank correct device
 
         # Convert List[Dict] → Dict[List or Tensor]
         if self.accelerator.is_main_process:
@@ -1131,6 +1132,7 @@ class GRPOTrainer(Trainer):
             for k in gathered_data[0]:
                 items = [d[k] for d in gathered_data]
                 if isinstance(items[0], torch.Tensor):
+                    items = [t.to(device) for t in items]
                     all_data[k] = torch.cat(items, dim=0)  # if all tensors, stack
                 else:
                     all_data[k] = items  # keep as list
@@ -1221,7 +1223,6 @@ class GRPOTrainer(Trainer):
         start = rank * batch_size_per_rank
         end = start + batch_size_per_rank
 
-        device = self.accelerator.device  # per-rank correct device
         sliced = {}
         for k, v in adjusted.items():
             if isinstance(v, torch.Tensor):
