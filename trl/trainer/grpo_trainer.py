@@ -1098,6 +1098,7 @@ class GRPOTrainer(Trainer):
         print(f"[Rank {self.accelerator.process_index}] Run adjustment {run_adjustment}") if self.DEBUG else None
 
         if not run_adjustment:
+            # ToDo: we may not be running but we should also check REUSE buffer!
             print("EXPLORATION IS enabled but nothing to explore") if self.DEBUG else None
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
@@ -1106,28 +1107,22 @@ class GRPOTrainer(Trainer):
         # === Gather all processes' data (must be done on all ranks!) ===
         print(f"[Rank {self.accelerator.process_index}] Gathering data") if self.DEBUG else None
 
-        local_data = []
-        for i in range(len(prompts)):
-            local_data.append({
-                "prompts": prompts[i],
-                "prompts_text": prompts_text[i],
-                "prompt_ids": prompt_ids[i],
-                "prompt_mask": prompt_mask[i],
-                "completion_ids": completion_ids[i],
-                "completion_mask": completion_mask[i],
-                "completions": completions[i],
-                "completions_text": completions_text[i],
-                "completion_lengths": completion_lengths[i],
-                "is_eos": is_eos[i]
-            })
+        batch_keys = [
+            "prompts", "prompts_text", "prompt_ids", "prompt_mask", "completion_ids", "completion_mask", 
+            "completions", "completions_text", "completion_lengths", "is_eos"
+        ]
 
+        local_data = [
+            {key: locals()[key][i] for key in batch_keys}
+            for i in range(len(prompts))
+        ]
         gathered_data = gather_object(local_data)
         device = self.accelerator.device  # per-rank correct device
 
-        # Convert List[Dict] → Dict[List or Tensor]
         if self.accelerator.is_main_process:
             print(f"# === Gathereed all and now main ===") if self.DEBUG else None
             all_data = {}
+            # Convert List[Dict] → Dict[List or Tensor] by stacking items up
             for k in gathered_data[0]:
                 items = [d[k].to(device) if isinstance(d[k], torch.Tensor) else d[k] for d in gathered_data]
                 if isinstance(items[0], torch.Tensor):
@@ -1155,19 +1150,11 @@ class GRPOTrainer(Trainer):
             # Update promising buffer with new observations (from exploration_slice)
             for k, v in all_data.items():
                 explored = v[exploration_slice]
-                if k in buffer: # this should not be hapenning when budget == num_gen
-                    # buffer[k] = buffer[k] + explored
-                    raise NotImplemented
-                else:  # always first time
-                    if isinstance(v, torch.Tensor):
-                        buffer[k] = explored.clone()
-                    else:
-                        buffer[k] = explored.copy()
+                assert k not in buffer, f"Unexpected existing key {k} in buffer" # this should not be hapenning when budget == num_gen
+                buffer[k] = explored.clone() if isinstance(v, torch.Tensor) else explored.copy()
 
             # Decide about explored item
-            reward_sum = buffer["rewards"].sum().item()
-            reward_len = buffer["rewards"].shape[0]
-
+            reward_sum, reward_len = buffer["rewards"].sum().item(), buffer["rewards"].shape[0]
             print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
             if reward_sum == 0 and reward_len >= n: 
                 # Discard failed exploratory sample when EXPLORATION_BUDGET reached
@@ -1182,7 +1169,7 @@ class GRPOTrainer(Trainer):
 
             # === Replace chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
-                full_len = len(all_data["rewards"]) - n  # rewards is now a list
+                full_len = len(all_data["rewards"]) - n
                 print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
                 for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
@@ -1215,23 +1202,17 @@ class GRPOTrainer(Trainer):
         adjusted = broadcast_object_list(adjusted, from_process=0)[0]
 
         # === Slice batch for this rank ===
-        rank = self.accelerator.process_index
-        print(f"[Rank {rank}] Final adjusted total {adjusted}") if self.DEBUG else None
-        batch_size_per_rank = self.args.per_device_train_batch_size
-        start = rank * batch_size_per_rank
-        end = start + batch_size_per_rank
+        print(f"[Rank {self.accelerator.process_index}] Final adjusted total {adjusted}") if self.DEBUG else None
+        batch_size = self.args.per_device_train_batch_size
+        start, end = self.accelerator.process_index * batch_size, (self.accelerator.process_index + 1) * batch_size
 
-        sliced = {}
-        for k, v in adjusted.items():
-            if isinstance(v, torch.Tensor):
-                if k in ["rewards", "rewards_per_func"]:
-                    sliced[k] = v.to(device)  # move to correct device (no need to slice as they are global rewards)
-                else:
-                    sliced[k] = v[start:end].to(device)  # slice and move to crrect device
-            elif isinstance(v, list):
-                sliced[k] = v[start:end]
+        # rewards are same, tensors should be moved to correct device, list is just sliced
+        sliced = { 
+            k: (v if k in ["rewards", "rewards_per_func"] else v[start:end]).to(device) if isinstance(v, torch.Tensor) else v[start:end]
+            for k, v in adjusted.items()
+        }
 
-        print(f"[Rank {rank}] Final adjusted final {sliced}") if self.DEBUG else None
+        print(f"[Rank {self.accelerator.process_index}] Final adjusted final {sliced}") if self.DEBUG else None
 
         BATCH_KEYS = [
             "prompts", "prompts_text", "prompt_ids", "prompt_mask",
