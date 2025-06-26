@@ -1081,6 +1081,8 @@ class GRPOTrainer(Trainer):
         Gathers all data to rank 0, applies the replacement strategy, and slices back.
         """
 
+        self.replacement_count = 0
+
         if not self.ENABLE_EXPLORATION:
             print("EXPLORATION IS DISABLED") if self.DEBUG else None
             return (prompts, prompts_text, prompt_ids, prompt_mask,
@@ -1182,6 +1184,7 @@ class GRPOTrainer(Trainer):
                     print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
                     if torch.all(chunk_rewards == 0).item() and self.REUSE_BUFFER:  # this prompt is uninformative
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
+                        self.replacement_count = self.replacement_count + 1
                         print(f"Found one and replacing {i} to {i + self.num_generations}") if self.DEBUG else None
                         for k in all_data:
                             if isinstance(all_data[k], torch.Tensor):
@@ -1561,6 +1564,35 @@ class GRPOTrainer(Trainer):
             self._metrics[mode]["num_tokens"] = [self.state.num_input_tokens_seen]
 
             print(f"[Rank {self.accelerator.process_index}] num_input_tokens_seen") if self.DEBUG else None
+
+            #### smart sampling metrics
+            # REWARD Reshape rewards into [num_items, num_gen]
+            reshaped_rewards = rewards.view(-1, self.num_generations)
+
+            is_easy = (reshaped_rewards == 1).all(dim=1)
+            is_hard = (reshaped_rewards == 0).all(dim=1)
+            is_medium = ~(is_easy | is_hard)
+
+            num_easy = is_easy.sum().item()
+            num_hard = is_hard.sum().item()
+            num_medium = is_medium.sum().item()
+            total = reshaped_rewards.size(0)
+
+            self._metrics[mode]["smartsampling/num_easy"].append(num_easy)
+            self._metrics[mode]["smartsampling/num_medium"].append(num_medium)
+            self._metrics[mode]["smartsampling/num_hard"].append(num_hard)
+
+            self._metrics[mode]["smartsampling/ratio_easy"].append(num_easy / total)
+            self._metrics[mode]["smartsampling/ratio_medium"].append(num_medium / total)
+            self._metrics[mode]["smartsampling/ratio_hard"].append(num_hard / total)
+
+            # No of replacements
+            self._metrics[mode]["smartsampling/num_replacements"].append(self.replacement_count)
+
+            # Length of reuse buffer
+            self._metrics[mode]["smartsampling/reuse_buffer_size"].append(len(self.REUSE_BUFFER))
+
+            ####
 
             # Log completion lengths, mean, min, max
             agg_completion_lengths = self.accelerator.gather(completion_lengths)
