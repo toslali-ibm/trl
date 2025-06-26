@@ -1578,18 +1578,26 @@ class GRPOTrainer(Trainer):
             num_medium = is_medium.sum().item()
             total = reshaped_rewards.size(0)
 
+            print(f"[Rank {self.accelerator.process_index}] num_easy: {num_easy}, num_medium: {num_medium}, num_hard: {num_hard}, total: {total}")
+
+
             self._metrics[mode]["smartsampling/num_easy"].append(num_easy)
             self._metrics[mode]["smartsampling/num_medium"].append(num_medium)
             self._metrics[mode]["smartsampling/num_hard"].append(num_hard)
+
+            print(f"[Rank {self.accelerator.process_index}] ratio_easy: {num_easy / total:.4f}, ratio_medium: {num_medium / total:.4f}, ratio_hard: {num_hard / total:.4f}")
+
 
             self._metrics[mode]["smartsampling/ratio_easy"].append(num_easy / total)
             self._metrics[mode]["smartsampling/ratio_medium"].append(num_medium / total)
             self._metrics[mode]["smartsampling/ratio_hard"].append(num_hard / total)
 
             # No of replacements
+            print(f"[Rank {self.accelerator.process_index}] num_replacements: {self.replacement_count}")
             self._metrics[mode]["smartsampling/num_replacements"].append(self.replacement_count)
 
             # Length of reuse buffer
+            print(f"[Rank {self.accelerator.process_index}] reuse_buffer_size: {len(self.REUSE_BUFFER)}")
             self._metrics[mode]["smartsampling/reuse_buffer_size"].append(len(self.REUSE_BUFFER))
 
             ####
