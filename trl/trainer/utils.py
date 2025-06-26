@@ -427,6 +427,7 @@ def pad(
     padding_value: int = 0,
     padding_side: str = "right",
     pad_to_multiple_of: Optional[int] = None,
+    fixed_length: Optional[int] = None
 ) -> torch.Tensor:
     """
     Pads a list of tensors to the same shape along the first dimension.
@@ -458,7 +459,10 @@ def pad(
                 [0, 0]]])
     """
     # Determine the maximum shape for each dimension
-    output_shape = np.max([t.shape for t in tensors], 0).tolist()
+    if fixed_length is not None:
+        output_shape = [fixed_length]
+    else:
+        output_shape = np.max([t.shape for t in tensors], 0).tolist()
 
     # Apply pad_to_multiple_of to the first (sequence) dimension
     if pad_to_multiple_of is not None:
