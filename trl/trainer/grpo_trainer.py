@@ -1147,6 +1147,7 @@ class GRPOTrainer(Trainer):
             )) if self.DEBUG else None
 
             # === Process exploration data ===
+            # ToDo: we may not be exploring but there might be items in reuse buffer!!!!
             assert len(self.PROMISING_BUFFER) == 1 # always exploring 1 item
             chosen_idx = next(iter(self.PROMISING_BUFFER))
             n = self.EXPLORATION_BUDGET # budget is equal to num_gen for now
@@ -1496,6 +1497,10 @@ class GRPOTrainer(Trainer):
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
+
+            # Length of promising buffer
+            print(f"[Rank {self.accelerator.process_index}] PROMISING_BUFFER: {len(self.PROMISING_BUFFER)}")
+            self._metrics[mode]["smartsampling/promising_buffer_size"].append(len(self.PROMISING_BUFFER))
 
             # Hook2: now that we have the rewards, we can adjust the batch accordingly!
             print(f"""[Rank {self.accelerator.process_index}] Before pruning:
