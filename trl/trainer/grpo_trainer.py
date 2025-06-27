@@ -1164,7 +1164,7 @@ class GRPOTrainer(Trainer):
             # Decide about explored item
             reward_sum, reward_len = buffer["rewards"].sum().item(), buffer["rewards"].shape[0]
             print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
-            if reward_sum == 0 and reward_len >= n: 
+            if (reward_sum == 0 or reward_sum == reward_len) and reward_len >= n: 
                 # Discard failed exploratory sample when EXPLORATION_BUDGET reached
                 print("Discard failed exploratory sample when EXPLORATION_BUDGET reached") if self.DEBUG else None
                 self.PROMISING_BUFFER.pop(chosen_idx)
