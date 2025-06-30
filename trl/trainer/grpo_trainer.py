@@ -1493,9 +1493,9 @@ class GRPOTrainer(Trainer):
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
-            
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK before adjust -- completion_lengths: {completion_lengths}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK before adjust  -- rewards: {rewards}")
+
             # Length of promising buffer
             print(f"[Rank {self.accelerator.process_index}] PROMISING_BUFFER: {len(self.PROMISING_BUFFER)}")
             self._metrics[mode]["smartsampling/promising_buffer_size"].append(len(self.PROMISING_BUFFER))
@@ -1539,8 +1539,8 @@ class GRPOTrainer(Trainer):
                 rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
             """)
 
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- completion_lengths: {completion_lengths}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- rewards: {rewards}")
 
             # Compute grouped-wise rewards
             mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
