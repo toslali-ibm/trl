@@ -1436,9 +1436,6 @@ class GRPOTrainer(Trainer):
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completions_text: {len(completions_text)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompts: {len(prompts)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- rewards_per_func: {rewards_per_func.shape}")
-
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
-            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
             
             # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
@@ -1496,7 +1493,9 @@ class GRPOTrainer(Trainer):
             # Apply weights to each reward function's output and sum
             rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
+            
             # Length of promising buffer
             print(f"[Rank {self.accelerator.process_index}] PROMISING_BUFFER: {len(self.PROMISING_BUFFER)}")
             self._metrics[mode]["smartsampling/promising_buffer_size"].append(len(self.PROMISING_BUFFER))
