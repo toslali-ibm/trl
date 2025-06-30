@@ -1025,7 +1025,7 @@ class GRPOTrainer(Trainer):
         # Main process adds exploration sample
         if accelerator.is_main_process:
             batch_ids = {sample["__idx__"] for sample in all_inputs}
-            print(f"---Main checking batch_ids: {batch_ids}") if self.DEBUG else None
+            print(f"---Main checking batch_ids: {batch_ids}")
             self.AVAILABLE_INDICES -= batch_ids
 
             if not self.PROMISING_BUFFER:
@@ -1036,11 +1036,11 @@ class GRPOTrainer(Trainer):
                     self.PROMISING_BUFFER[chosen_idx] = {}
                     self.AVAILABLE_INDICES.discard(chosen_idx)
                     chosen_sample = self.train_dataset[chosen_idx]
-                    print(f"----Choosing idx: {chosen_idx} and data :{chosen_sample}") if self.DEBUG else None
+                    print(f"----Choosing idx: {chosen_idx} and data :{chosen_sample}")
                     all_inputs += [chosen_sample] * self.EXPLORATION_BUDGET
                     self.current_exploration = [chosen_idx]
                 else:
-                    print("---Warning no explore candidates!") if self.DEBUG else None
+                    print("!!!!!Warning no explore candidates!")
             else:
                 assert len(self.PROMISING_BUFFER) == 1
                 chosen_idx = next(iter(self.PROMISING_BUFFER))
@@ -1066,9 +1066,9 @@ class GRPOTrainer(Trainer):
         k, m = divmod(total_len, num_procs)
         start = rank * k + min(rank, m)
         end = start + k + (1 if rank < m else 0)
-        print(f"[Rank {rank}] - all inputs {all_inputs}")
+        print(f"[Rank {rank}] - all inputs {all_inputs}") if self.DEBUG else None
         inputs = all_inputs[start:end]
-        print(f"[Rank {rank}] Final sliced inputs (len={len(inputs)}): {[i['__idx__'] for i in inputs]}  - num_procs={num_procs}, start={start}, end={end}") if self.DEBUG else None
+        print(f"[Rank {rank}] Final sliced inputs (len={len(inputs)}): {[i['__idx__'] for i in inputs]}  - num_procs={num_procs}, start={start}, end={end}") 
         return inputs
     
     def adjust_batch(
@@ -1084,7 +1084,7 @@ class GRPOTrainer(Trainer):
         self.replacement_count = 0
 
         if not self.ENABLE_EXPLORATION:
-            print("EXPLORATION IS DISABLED") if self.DEBUG else None
+            print("!!!!!EXPLORATION IS DISABLED") if self.DEBUG else None
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
@@ -1101,7 +1101,7 @@ class GRPOTrainer(Trainer):
 
         if not run_adjustment:
             # ToDo: we may not be running but we should also check REUSE buffer!
-            print("EXPLORATION IS enabled but nothing to explore") if self.DEBUG else None
+            print("!!!!!EXPLORATION IS enabled but nothing to explore")
             return (prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
@@ -1141,10 +1141,10 @@ class GRPOTrainer(Trainer):
             all_data["rewards"] = rewards
             all_data["rewards_per_func"] = rewards_per_func
 
-            print(" | ".join(
+            print("=== Gathered All Data Types and Shapes === | " + " | ".join(
                 f"{k}: {type(v).__name__}, shape={tuple(v.shape) if isinstance(v, torch.Tensor) else f'len={len(v)}'}"
                 for k, v in all_data.items()
-            )) if self.DEBUG else None
+            ))
 
             # === Process exploration data ===
             # ToDo: we may not be exploring but there might be items in reuse buffer!!!!
@@ -1163,14 +1163,14 @@ class GRPOTrainer(Trainer):
 
             # Decide about explored item
             reward_sum, reward_len = buffer["rewards"].sum().item(), buffer["rewards"].shape[0]
-            print(f"Checking rewards sum {reward_sum} and len {reward_len}") if self.DEBUG else None
+            print(f"Checking rewards sum {reward_sum} and len {reward_len}")
             if (reward_sum == 0 or reward_sum == reward_len) and reward_len >= n: 
                 # Discard failed exploratory sample when EXPLORATION_BUDGET reached
-                print("Discard failed exploratory sample when EXPLORATION_BUDGET reached") if self.DEBUG else None
+                print("----Discard failed exploratory sample when EXPLORATION_BUDGET reached")
                 self.PROMISING_BUFFER.pop(chosen_idx)
             elif reward_sum > 0 and reward_len >= self.num_generations:
                 # Move good sample to REUSE_BUFFER when num_generations reached
-                print("Move good sample to REUSE_BUFFER when num_generations reached") if self.DEBUG else None
+                print("----Move good sample to REUSE_BUFFER when num_generations reached")
                 self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
             else:
                 raise NotImplemented
@@ -1178,15 +1178,15 @@ class GRPOTrainer(Trainer):
             # === Replace chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
                 full_len = len(all_data["rewards"]) - n
-                print(f"REuse buffer is here so checking replacements for full_len {full_len}") if self.DEBUG else None
+                print(f"REuse buffer is here so checking replacements for full_len {full_len}")
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
                 for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
                     chunk_rewards = all_data["rewards"][i:i + self.num_generations]
-                    print(f"Chunk rewards {chunk_rewards}") if self.DEBUG else None
+                    print(f"Chunk rewards {chunk_rewards}")
                     if torch.all(chunk_rewards == 0).item() and self.REUSE_BUFFER:  # this prompt is uninformative
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
                         self.replacement_count = self.replacement_count + 1
-                        print(f"Found one and replacing {i} to {i + self.num_generations}") if self.DEBUG else None
+                        print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
                         for k in all_data:
                             if isinstance(all_data[k], torch.Tensor):
                                 replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
@@ -1427,10 +1427,6 @@ class GRPOTrainer(Trainer):
             else:
                 completions = completions_text
 
-
-
-        
-
             rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
 
 
@@ -1441,6 +1437,9 @@ class GRPOTrainer(Trainer):
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompts: {len(prompts)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- rewards_per_func: {rewards_per_func.shape}")
 
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
+            
             # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
             reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
@@ -1516,7 +1515,7 @@ class GRPOTrainer(Trainer):
                 is_eos = {is_eos} (shape = {is_eos.shape})
                 rewards = {rewards} (shape = {rewards.shape})
                 rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
-            """) if self.DEBUG else None
+            """) 
             
             # Prune extra exploration generations BEFORE slicing
             (prompts, prompts_text, prompt_ids, prompt_mask,
@@ -1539,7 +1538,10 @@ class GRPOTrainer(Trainer):
                 is_eos = {is_eos} (shape = {is_eos.shape})
                 rewards = {rewards} (shape = {rewards.shape})
                 rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
-            """) if self.DEBUG else None
+            """)
+
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- completion_lengths: {completion_lengths}")
+            print(f"---[Rank {self.accelerator.process_index}] value CHECK -- rewards: {rewards}")
 
             # Compute grouped-wise rewards
             mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
