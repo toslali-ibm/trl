@@ -1175,7 +1175,7 @@ class GRPOTrainer(Trainer):
             else:
                 raise NotImplemented
 
-            # === Replace chunks with REUSE_BUFFER if needed ===
+            # === Replace hard chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
                 full_len = len(all_data["rewards"]) - n
                 print(f"REuse buffer is here so checking replacements for full_len {full_len}")
@@ -1187,6 +1187,27 @@ class GRPOTrainer(Trainer):
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
                         self.replacement_count = self.replacement_count + 1
                         print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
+                        for k in all_data:
+                            if isinstance(all_data[k], torch.Tensor):
+                                replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
+                                all_data[k][i:i + self.num_generations] = replacement_tensor
+                                assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
+                            else:
+                                all_data[k][i:i + self.num_generations] = reuse[k]
+                                assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
+
+            # === Replace easy chunks with REUSE_BUFFER if needed ===
+            if len(self.REUSE_BUFFER) > 0:
+                full_len = len(all_data["rewards"]) - n
+                print(f"[EASY] REuse buffer is here so checking replacements for full_len {full_len}")
+                assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
+                for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
+                    chunk_rewards = all_data["rewards"][i:i + self.num_generations]
+                    print(f"[EASY] Chunk rewards {chunk_rewards}")
+                    if torch.all(chunk_rewards == 1).item() and self.REUSE_BUFFER:  # this prompt is uninformative [EASY]
+                        idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
+                        self.replacement_count = self.replacement_count + 1
+                        print(f"[EASY] Found one and replacing starting from index {i} to {i + self.num_generations}")
                         for k in all_data:
                             if isinstance(all_data[k], torch.Tensor):
                                 replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
@@ -1250,7 +1271,7 @@ class GRPOTrainer(Trainer):
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
-        print("----check max prompt length")
+        print("----check max prompt length") if self.DEBUG else None
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
@@ -1258,14 +1279,14 @@ class GRPOTrainer(Trainer):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:
             # First, update the vLLM weights if needed
-            print("----Update model")
+            print("----Update model") if self.DEBUG else None
             if self.state.global_step != self._last_loaded_step:
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
             if self.vllm_mode == "server":
-                print("----Inference time!")
+                print("----Inference time!") if self.DEBUG else None
                 all_prompts_text = gather_object(prompts_text)
                 if self.accelerator.is_main_process:
                     print("----Main process will do vllm communication!")
@@ -1331,7 +1352,7 @@ class GRPOTrainer(Trainer):
                     all_prompts_text = prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
-                    print("All prompts text", all_prompts_text)
+                    print("All prompts text", all_prompts_text) if self.DEBUG else None
                     all_outputs = self.llm.generate(all_prompts_text, sampling_params=sampling_params, use_tqdm=False)
 
                 completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
@@ -1502,19 +1523,20 @@ class GRPOTrainer(Trainer):
 
             # Hook2: now that we have the rewards, we can adjust the batch accordingly!
             print(f"""[Rank {self.accelerator.process_index}] Before pruning:
-                prompts = {prompts} (len = {len(prompts)})
-                prompts_text = {prompts_text} (len = {len(prompts_text)})
-                prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
-                prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
-                completion_ids = {completion_ids} (shape = {completion_ids.shape})
-                completion_mask = {completion_mask} (shape = {completion_mask.shape})
-                completions = {completions} (len = {len(completions)})
-                completions_text = {completions_text} (len = {len(completions_text)})
-                completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
-                is_eos = {is_eos} (shape = {is_eos.shape})
-                rewards = {rewards} (shape = {rewards.shape})
-                rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
-            """) 
+                prompts = {prompts if self.DEBUG else f'len={len(prompts)}'}
+                prompts_text = {prompts_text if self.DEBUG else f'len={len(prompts_text)}'}
+                prompt_ids = {prompt_ids if self.DEBUG else f'shape={prompt_ids.shape}'}
+                prompt_mask = {prompt_mask if self.DEBUG else f'shape={prompt_mask.shape}'}
+                completion_ids = {completion_ids if self.DEBUG else f'shape={completion_ids.shape}'}
+                completion_mask = {completion_mask if self.DEBUG else f'shape={completion_mask.shape}'}
+                completions = {completions if self.DEBUG else f'len={len(completions)}'}
+                completions_text = {completions_text if self.DEBUG else f'len={len(completions_text)}'}
+                completion_lengths = {completion_lengths if self.DEBUG else f'shape={completion_lengths.shape}'}
+                is_eos = {is_eos if self.DEBUG else f'shape={is_eos.shape}'}
+                rewards = {rewards if self.DEBUG else f'shape={rewards.shape}'}
+                rewards_per_func = {rewards_per_func if self.DEBUG else f'shape={rewards_per_func.shape}'}
+            """)
+
             
             # Prune extra exploration generations BEFORE slicing
             (prompts, prompts_text, prompt_ids, prompt_mask,
@@ -1525,19 +1547,20 @@ class GRPOTrainer(Trainer):
                 completion_lengths, is_eos, rewards, rewards_per_func)
                     
             print(f"""[Rank {self.accelerator.process_index}] After pruning:
-                prompts = {prompts} (len = {len(prompts)})
-                prompts_text = {prompts_text} (len = {len(prompts_text)})
-                prompt_ids = {prompt_ids} (shape = {prompt_ids.shape})
-                prompt_mask = {prompt_mask} (shape = {prompt_mask.shape})
-                completion_ids = {completion_ids} (shape = {completion_ids.shape})
-                completion_mask = {completion_mask} (shape = {completion_mask.shape})
-                completions = {completions} (len = {len(completions)})
-                completions_text = {completions_text} (len = {len(completions_text)})
-                completion_lengths = {completion_lengths} (shape = {completion_lengths.shape})
-                is_eos = {is_eos} (shape = {is_eos.shape})
-                rewards = {rewards} (shape = {rewards.shape})
-                rewards_per_func = {rewards_per_func} (shape = {rewards_per_func.shape})
+                prompts = {prompts if self.DEBUG else f'len={len(prompts)}'}
+                prompts_text = {prompts_text if self.DEBUG else f'len={len(prompts_text)}'}
+                prompt_ids = {prompt_ids if self.DEBUG else f'shape={prompt_ids.shape}'}
+                prompt_mask = {prompt_mask if self.DEBUG else f'shape={prompt_mask.shape}'}
+                completion_ids = {completion_ids if self.DEBUG else f'shape={completion_ids.shape}'}
+                completion_mask = {completion_mask if self.DEBUG else f'shape={completion_mask.shape}'}
+                completions = {completions if self.DEBUG else f'len={len(completions)}'}
+                completions_text = {completions_text if self.DEBUG else f'len={len(completions_text)}'}
+                completion_lengths = {completion_lengths if self.DEBUG else f'shape={completion_lengths.shape}'}
+                is_eos = {is_eos if self.DEBUG else f'shape={is_eos.shape}'}
+                rewards = {rewards if self.DEBUG else f'shape={rewards.shape}'}
+                rewards_per_func = {rewards_per_func if self.DEBUG else f'shape={rewards_per_func.shape}'}
             """)
+
 
             print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- completion_lengths: {completion_lengths}")
             print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- rewards: {rewards}")
