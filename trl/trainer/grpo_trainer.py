@@ -1175,27 +1175,6 @@ class GRPOTrainer(Trainer):
             else:
                 raise NotImplemented
 
-            # === Replace hard chunks with REUSE_BUFFER if needed ===
-            if len(self.REUSE_BUFFER) > 0:
-                full_len = len(all_data["rewards"]) - n
-                print(f"REuse buffer is here so checking replacements for full_len {full_len}")
-                assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
-                for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
-                    chunk_rewards = all_data["rewards"][i:i + self.num_generations]
-                    print(f"Chunk rewards {chunk_rewards}")
-                    if torch.all(chunk_rewards == 0).item() and self.REUSE_BUFFER:  # this prompt is uninformative
-                        idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
-                        self.replacement_count = self.replacement_count + 1
-                        print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
-                        for k in all_data:
-                            if isinstance(all_data[k], torch.Tensor):
-                                replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
-                                all_data[k][i:i + self.num_generations] = replacement_tensor
-                                assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            else:
-                                all_data[k][i:i + self.num_generations] = reuse[k]
-                                assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
-
             # === Replace easy chunks with REUSE_BUFFER if needed ===
             if len(self.REUSE_BUFFER) > 0:
                 full_len = len(all_data["rewards"]) - n
