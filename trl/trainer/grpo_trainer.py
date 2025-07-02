@@ -1161,62 +1161,32 @@ class GRPOTrainer(Trainer):
                 assert k not in buffer, f"Unexpected existing key {k} in buffer" # this should not be hapenning when budget == num_gen
                 buffer[k] = explored.clone() if isinstance(v, torch.Tensor) else explored.copy()
 
-            # Decide about explored item
-            reward_sum, reward_len = buffer["rewards"].sum().item(), buffer["rewards"].shape[0]
-            print(f"Checking rewards sum {reward_sum} and len {reward_len}")
-            if (reward_sum == 0 or reward_sum == reward_len) and reward_len >= n: 
-                # Discard failed exploratory sample when EXPLORATION_BUDGET reached
-                print("----Discard failed exploratory sample when EXPLORATION_BUDGET reached")
-                self.PROMISING_BUFFER.pop(chosen_idx)
-            elif reward_sum > 0 and reward_len >= self.num_generations:
-                # Move good sample to REUSE_BUFFER when num_generations reached
-                print("----Move good sample to REUSE_BUFFER when num_generations reached")
-                self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
-            else:
-                raise NotImplemented
+            # Move all samples no matter what to REUSE_BUFFER when num_generations reached
+            print("----Move all samples to REUSE_BUFFER when num_generations reached")
+            self.REUSE_BUFFER.append((chosen_idx, self.PROMISING_BUFFER.pop(chosen_idx)))
 
-            # === Replace hard chunks with REUSE_BUFFER if needed ===
+            # === Replace random chunk with REUSE_BUFFER always ===
             if len(self.REUSE_BUFFER) > 0:
                 full_len = len(all_data["rewards"]) - n
-                print(f"REuse buffer is here so checking replacements for full_len {full_len}")
+                print(f"REuse buffer is ALWAYS here so checking replacements for full_len {full_len}")
                 assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
-                for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
-                    chunk_rewards = all_data["rewards"][i:i + self.num_generations]
-                    print(f"Chunk rewards {chunk_rewards}")
-                    if torch.all(chunk_rewards == 0).item() and self.REUSE_BUFFER:  # this prompt is uninformative
-                        idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
-                        self.replacement_count = self.replacement_count + 1
-                        print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
-                        for k in all_data:
-                            if isinstance(all_data[k], torch.Tensor):
-                                replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
-                                all_data[k][i:i + self.num_generations] = replacement_tensor
-                                assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            else:
-                                all_data[k][i:i + self.num_generations] = reuse[k]
-                                assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
+                # Replace with random chunk for sanity
+                num_chunks = full_len // self.num_generations
+                random_chunk_idx = random.randint(0, num_chunks - 1)
+                i = random_chunk_idx * self.num_generations
+                print(f"---Chose random chunk {random_chunk_idx}, with idx {i} from number of chunks {num_chunks}")
+                idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
+                self.replacement_count = self.replacement_count + 1
+                print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
+                for k in all_data:
+                    if isinstance(all_data[k], torch.Tensor):
+                        replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
+                        all_data[k][i:i + self.num_generations] = replacement_tensor
+                        assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
+                    else:
+                        all_data[k][i:i + self.num_generations] = reuse[k]
+                        assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
 
-            # === Replace easy chunks with REUSE_BUFFER if needed ===
-            if len(self.REUSE_BUFFER) > 0:
-                full_len = len(all_data["rewards"]) - n
-                print(f"[EASY] REuse buffer is here so checking replacements for full_len {full_len}")
-                assert full_len % self.num_generations == 0, "Full batch must be divisible by num_generations"
-                for i in range(0, full_len, self.num_generations):  # over the full global batch in chunks of num_generations
-                    chunk_rewards = all_data["rewards"][i:i + self.num_generations]
-                    print(f"[EASY] Chunk rewards {chunk_rewards}")
-                    if torch.all(chunk_rewards == 1).item() and self.REUSE_BUFFER:  # this prompt is uninformative [EASY]
-                        idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
-                        self.replacement_count = self.replacement_count + 1
-                        print(f"[EASY] Found one and replacing starting from index {i} to {i + self.num_generations}")
-                        for k in all_data:
-                            if isinstance(all_data[k], torch.Tensor):
-                                replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
-                                all_data[k][i:i + self.num_generations] = replacement_tensor
-                                assert len(replacement_tensor) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            else:
-                                all_data[k][i:i + self.num_generations] = reuse[k]
-                                assert len(reuse[k]) == self.num_generations, f"Mismatch in replacement size for {k}"
-                            
             # === Prune exploration from the end ===
             for key in all_data:
                 val = all_data[key]
