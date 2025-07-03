@@ -1112,7 +1112,7 @@ class GRPOTrainer(Trainer):
         local_data = []
         for i in range(len(prompts)):
             local_data.append({
-                "prompt_completion_ids": prompt_completion_ids[i]
+                "prompt_completion_ids": prompt_completion_ids[i],
                 "prompts": prompts[i],
                 "prompts_text": prompts_text[i],
                 "prompt_ids": prompt_ids[i],
