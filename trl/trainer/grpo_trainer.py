@@ -1191,6 +1191,7 @@ class GRPOTrainer(Trainer):
                         idx, reuse = self.REUSE_BUFFER.popleft()  # lets get informative from FIFO
                         self.replacement_count = self.replacement_count + 1
                         print(f"Found one and replacing starting from index {i} to {i + self.num_generations}")
+                        torch.distributed.breakpoint()
                         for k in all_data:
                             if isinstance(all_data[k], torch.Tensor):
                                 replacement_tensor = torch.stack(reuse[k]) if isinstance(reuse[k], list) else reuse[k]
@@ -1264,6 +1265,7 @@ class GRPOTrainer(Trainer):
         print(f"[Rank {self.accelerator.process_index}] Inputs before exploration: {inputs}") if self.DEBUG else None
         inputs = self.add_exploration(inputs)
         print(f"[Rank {self.accelerator.process_index}] Inputs after exploration: {inputs}")  if self.DEBUG else None
+        torch.distributed.breakpoint()
 
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
@@ -1528,12 +1530,15 @@ class GRPOTrainer(Trainer):
             """)
             
             # Prune extra exploration generations BEFORE slicing
+            torch.distributed.breakpoint()
             (prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
             completion_ids, completion_mask, completions, completions_text,
             completion_lengths, is_eos, rewards, rewards_per_func) = self.adjust_batch(
                 prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
                 completion_ids, completion_mask, completions, completions_text,
                 completion_lengths, is_eos, rewards, rewards_per_func)
+
+            torch.distributed.breakpoint()
                     
             print(f"""[Rank {self.accelerator.process_index}] After pruning:
                 prompt_completion_ids = {prompt_completion_ids if self.DEBUG else f'shape={prompt_completion_ids.shape}'}
@@ -1765,7 +1770,6 @@ class GRPOTrainer(Trainer):
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        torch.distributed.breakpoint()
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
         torch.distributed.breakpoint()
         # Compute the KL divergence between the model and the reference model
@@ -1842,10 +1846,13 @@ class GRPOTrainer(Trainer):
         return loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys: Optional[list[str]] = None):
+        torch.distributed.breakpoint()
         inputs = self._prepare_inputs(inputs)
+        torch.distributed.breakpoint()
         with torch.no_grad():
             with self.compute_loss_context_manager():
                 loss = self.compute_loss(model, inputs)
+                torch.distributed.breakpoint()
             loss = loss.mean().detach()
         return loss, None, None
 
