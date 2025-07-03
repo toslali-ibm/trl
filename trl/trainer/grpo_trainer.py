@@ -84,10 +84,10 @@ if is_wandb_available():
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
-import debugpy
-debugpy.listen(("0.0.0.0", 5679))  # Allow remote debugging on port 5678
-print("\n\n\n\n-=-=-=-=-=-Waiting for debugger to attach...\n\n\n\n\n")
-debugpy.wait_for_client()  # Execution will pause here until a debugger is attached
+# import debugpy
+# debugpy.listen(("0.0.0.0", 5679))  # Allow remote debugging on port 5678
+# print("\n\n\n\n-=-=-=-=-=-Waiting for debugger to attach...\n\n\n\n\n")
+# debugpy.wait_for_client()  # Execution will pause here until a debugger is attached
 
 class RepeatSampler(Sampler):
     """
@@ -1597,6 +1597,19 @@ class GRPOTrainer(Trainer):
             print(f"[Rank {self.accelerator.process_index}] all_process_advantages {all_process_advantages}")
             advantages = advantages[process_slice]
             print(f"[Rank {self.accelerator.process_index}] advantages {advantages}")
+
+            # Advantage metrics
+            non_zero_advantages = (all_process_advantages != 0).sum().item()
+            sum_positive_advantages = all_process_advantages[all_process_advantages > 0].sum().item()
+            sum_negative_advantages = all_process_advantages[all_process_advantages < 0].sum().item()
+
+            print(f"[Rank {self.accelerator.process_index}] Non-zero advantages: {non_zero_advantages}, "
+                f"Sum positive: {sum_positive_advantages:.4f}, Sum negative: {sum_negative_advantages:.4f}")
+
+            # Log the metrics
+            self._metrics[mode]["advantages/advantages_non_zero_count"].append(non_zero_advantages)
+            self._metrics[mode]["advantages/advantages_sum_positive"].append(sum_positive_advantages)
+            self._metrics[mode]["advantages/advantages_sum_negative"].append(sum_negative_advantages)
 
             # Log the metrics
             if mode == "train":
