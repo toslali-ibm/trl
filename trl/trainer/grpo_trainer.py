@@ -1437,7 +1437,7 @@ class GRPOTrainer(Trainer):
 
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompt_ids shape: {prompt_ids.shape}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completion_ids shape: {completion_ids.shape}")
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- attention_mask shape: {attention_mask.shape}")
+            # print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- attention_mask shape: {attention_mask.shape}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completions_text: {len(completions_text)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompts: {len(prompts)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- rewards_per_func: {rewards_per_func.shape}")
