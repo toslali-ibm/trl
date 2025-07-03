@@ -993,9 +993,12 @@ class GRPOTrainer(Trainer):
             generate_every = self.args.steps_per_generation * self.num_iterations
             if self._step % generate_every == 0 or self._buffered_inputs is None:
                 # self._buffered_inputs=None can occur when resuming from a checkpoint
+                torch.distributed.breakpoint()
                 generation_batch = self._generate_and_score_completions(generation_batch)
+                torch.distributed.breakpoint()
                 generation_batch = shuffle_tensor_dict(generation_batch)
                 self._buffered_inputs = split_tensor_dict(generation_batch, self.args.steps_per_generation)
+                torch.distributed.breakpoint()
             inputs = self._buffered_inputs[self._step % self.args.steps_per_generation]
             self._step += 1
         else:
@@ -1756,14 +1759,15 @@ class GRPOTrainer(Trainer):
 
     def _compute_loss(self, model, inputs):
         # Compute the per-token log probabilities for the model
+        torch.distributed.breakpoint()
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-
+        torch.distributed.breakpoint()
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-
+        torch.distributed.breakpoint()
         # Compute the KL divergence between the model and the reference model
         if self.beta != 0.0:
             with torch.no_grad():
@@ -1782,6 +1786,7 @@ class GRPOTrainer(Trainer):
 
         # Compute the loss
         advantages = inputs["advantages"]
+        torch.distributed.breakpoint()
         # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
         # old_per_token_logps == per_token_logps, so we can skip it's computation
         # (see _generate_and_score_completions) and use per_token_logps.detach() instead.
