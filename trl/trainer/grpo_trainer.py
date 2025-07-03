@@ -1072,7 +1072,7 @@ class GRPOTrainer(Trainer):
         return inputs
     
     def adjust_batch(
-        self, prompts, prompts_text, prompt_ids, prompt_mask,
+        self, prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
         completion_ids, completion_mask, completions, completions_text,
         completion_lengths, is_eos, rewards, rewards_per_func
     ):
@@ -1085,7 +1085,7 @@ class GRPOTrainer(Trainer):
 
         if not self.ENABLE_EXPLORATION:
             print("!!!!!EXPLORATION IS DISABLED") if self.DEBUG else None
-            return (prompts, prompts_text, prompt_ids, prompt_mask,
+            return (prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
 
@@ -1102,7 +1102,7 @@ class GRPOTrainer(Trainer):
         if not run_adjustment:
             # ToDo: we may not be running but we should also check REUSE buffer!
             print("!!!!!EXPLORATION IS enabled but nothing to explore")
-            return (prompts, prompts_text, prompt_ids, prompt_mask,
+            return (prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
                     completion_ids, completion_mask, completions, completions_text,
                     completion_lengths, is_eos, rewards, rewards_per_func)
 
@@ -1112,6 +1112,7 @@ class GRPOTrainer(Trainer):
         local_data = []
         for i in range(len(prompts)):
             local_data.append({
+                "prompt_completion_ids": prompt_completion_ids[i]
                 "prompts": prompts[i],
                 "prompts_text": prompts_text[i],
                 "prompt_ids": prompt_ids[i],
@@ -1245,7 +1246,7 @@ class GRPOTrainer(Trainer):
         print(f"[Rank {self.accelerator.process_index}] Final adjusted final {sliced}") if self.DEBUG else None
 
         BATCH_KEYS = [
-            "prompts", "prompts_text", "prompt_ids", "prompt_mask",
+            "prompt_completion_ids", "prompts", "prompts_text", "prompt_ids", "prompt_mask",
             "completion_ids", "completion_mask", "completions", "completions_text",
             "completion_lengths", "is_eos", "rewards", "rewards_per_func"
         ]
@@ -1421,23 +1422,6 @@ class GRPOTrainer(Trainer):
                 truncated_completions = ~is_eos.any(dim=1)
                 completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
-            # Concatenate prompt_mask with completion_mask for logit computation
-            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
-
-            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-            batch_size = prompt_ids.shape[0] if mode == "train" else self.args.per_device_eval_batch_size
-
-            with torch.no_grad():
-                # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
-                # old_per_token_logps == per_token_logps, so we can skip it's computation here, and use
-                # per_token_logps.detach() instead.
-                if self.num_iterations > 1 or self.args.steps_per_generation > self.args.gradient_accumulation_steps:
-                    old_per_token_logps = self._get_per_token_logps(
-                        self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
-                    )
-                else:
-                    old_per_token_logps = None
-
             # Decode the generated completions
             completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
             if is_conversational(inputs[0]):
@@ -1457,7 +1441,11 @@ class GRPOTrainer(Trainer):
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- completions_text: {len(completions_text)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompts: {len(prompts)}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- rewards_per_func: {rewards_per_func.shape}")
-            
+
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- prompt_completion_ids: {prompt_completion_ids.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- logits_to_keep: {logits_to_keep.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK -- old_per_token_logps: {old_per_token_logps}")
+
             # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
             reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
@@ -1523,6 +1511,7 @@ class GRPOTrainer(Trainer):
 
             # Hook2: now that we have the rewards, we can adjust the batch accordingly!
             print(f"""[Rank {self.accelerator.process_index}] Before pruning:
+                prompt_completion_ids = {prompt_completion_ids if self.DEBUG else f'shape={prompt_completion_ids.shape}'}
                 prompts = {prompts if self.DEBUG else f'len={len(prompts)}'}
                 prompts_text = {prompts_text if self.DEBUG else f'len={len(prompts_text)}'}
                 prompt_ids = {prompt_ids if self.DEBUG else f'shape={prompt_ids.shape}'}
@@ -1536,17 +1525,17 @@ class GRPOTrainer(Trainer):
                 rewards = {rewards if self.DEBUG else f'shape={rewards.shape}'}
                 rewards_per_func = {rewards_per_func if self.DEBUG else f'shape={rewards_per_func.shape}'}
             """)
-
             
             # Prune extra exploration generations BEFORE slicing
-            (prompts, prompts_text, prompt_ids, prompt_mask,
+            (prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
             completion_ids, completion_mask, completions, completions_text,
             completion_lengths, is_eos, rewards, rewards_per_func) = self.adjust_batch(
-                prompts, prompts_text, prompt_ids, prompt_mask,
+                prompt_completion_ids, prompts, prompts_text, prompt_ids, prompt_mask,
                 completion_ids, completion_mask, completions, completions_text,
                 completion_lengths, is_eos, rewards, rewards_per_func)
                     
             print(f"""[Rank {self.accelerator.process_index}] After pruning:
+                prompt_completion_ids = {prompt_completion_ids if self.DEBUG else f'shape={prompt_completion_ids.shape}'}
                 prompts = {prompts if self.DEBUG else f'len={len(prompts)}'}
                 prompts_text = {prompts_text if self.DEBUG else f'len={len(prompts_text)}'}
                 prompt_ids = {prompt_ids if self.DEBUG else f'shape={prompt_ids.shape}'}
@@ -1561,6 +1550,22 @@ class GRPOTrainer(Trainer):
                 rewards_per_func = {rewards_per_func if self.DEBUG else f'shape={rewards_per_func.shape}'}
             """)
 
+            # Concatenate prompt_mask with completion_mask for logit computation
+            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
+
+            logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+            batch_size = prompt_ids.shape[0] if mode == "train" else self.args.per_device_eval_batch_size
+
+            with torch.no_grad():
+                # When using num_iterations == 1 and steps_per_generation <= gradient_accumulation_steps
+                # old_per_token_logps == per_token_logps, so we can skip it's computation here, and use
+                # per_token_logps.detach() instead.
+                if self.num_iterations > 1 or self.args.steps_per_generation > self.args.gradient_accumulation_steps:
+                    old_per_token_logps = self._get_per_token_logps(
+                        self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                    )
+                else:
+                    old_per_token_logps = None
 
             print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- completion_lengths: {completion_lengths}")
             print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- rewards: {rewards}")
@@ -1583,9 +1588,9 @@ class GRPOTrainer(Trainer):
                 (self.accelerator.process_index + 1) * len(prompts),
             )
             all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
-            print(f"[Rank {self.accelerator.process_index}] all_process_advantages {all_process_advantages}") if self.DEBUG else None
+            print(f"[Rank {self.accelerator.process_index}] all_process_advantages {all_process_advantages}")
             advantages = advantages[process_slice]
-            print(f"[Rank {self.accelerator.process_index}] advantages {advantages}") if self.DEBUG else None
+            print(f"[Rank {self.accelerator.process_index}] advantages {advantages}")
 
             # Log the metrics
             if mode == "train":
@@ -1659,6 +1664,7 @@ class GRPOTrainer(Trainer):
             self._metrics[mode]["reward"].append(mean_grouped_rewards.mean().item())
             self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
             self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
+
 
             self._metrics[mode]["advantages"].append(advantages.mean().item())
 
