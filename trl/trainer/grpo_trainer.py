@@ -1566,7 +1566,7 @@ class GRPOTrainer(Trainer):
                     old_per_token_logps = None
 
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK after ajust -- attention_mask shape: {attention_mask.shape}")
-            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK after ajust after ajust-- logits_to_keep: {logits_to_keep.shape}")
+            print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK after ajust after ajust-- logits_to_keep: {logits_to_keep}")
             print(f"[Rank {self.accelerator.process_index}] DEBUG CHECK after ajust -- old_per_token_logps: {old_per_token_logps}")
 
             print(f"---[Rank {self.accelerator.process_index}] value CHECK after adjust  -- completion_lengths: {completion_lengths}")
