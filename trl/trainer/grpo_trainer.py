@@ -84,6 +84,10 @@ if is_wandb_available():
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
+import debugpy
+debugpy.listen(("0.0.0.0", 5679))  # Allow remote debugging on port 5678
+print("\n\n\n\n-=-=-=-=-=-Waiting for debugger to attach...\n\n\n\n\n")
+debugpy.wait_for_client()  # Execution will pause here until a debugger is attached
 
 class RepeatSampler(Sampler):
     """
