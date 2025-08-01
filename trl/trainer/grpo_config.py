@@ -332,6 +332,14 @@ class GRPOConfig(TrainingArguments):
         metadata={"help": "Implementation of the cache method for faster generation when use_vllm is set to False."},
     )
 
+    # Parameters that control smart sampling
+    smart_sampling: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable or disable smart sampling"
+        },
+    )
+
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: bool = field(
         default=False,
